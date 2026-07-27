@@ -44,6 +44,7 @@ nostdb check TARGET
 nostdb convert INPUT OUTPUT
 nostdb export --nost [PATH]
 nostdb query [CYPHER] [--format FORMAT] [--project PATH]
+nostdb link list|check [--format FORMAT] [--project PATH]
 nostdb --version [--json]
 ```
 
@@ -55,7 +56,12 @@ Results are written as `table`, `json`, `jsonl`, or `csv`. Only `json` and `json
 the warnings; the other two write them to standard error, because a warning nobody sees
 is the same as no warning. The table is for a person and is explicitly not stable.
 
-`plan`, `build`, `apply`, `sync`, `link`, `catalog`, `server`, `plugin`, and
+`link list` reports every declared link and what became of it; `link check` reports the
+same and exits 5 when any is unreachable. `link add`, `link remove`, and `link refresh`
+each reconcile a declaration with its settings entry, which needs the multi-file journal
+the settings contract requires, and are refused by name until that exists.
+
+`plan`, `build`, `apply`, `sync`, `catalog`, `server`, `plugin`, and
 `view` are not implemented yet. See the implementation progress record in the root
 superproject for which increment owns each.
 

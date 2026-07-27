@@ -22,6 +22,7 @@
 
 pub mod command;
 pub mod exit;
+pub mod link;
 pub mod output;
 pub mod query;
 
@@ -85,6 +86,15 @@ pub enum Invocation {
     },
     /// `nostdb export --nost [PATH]`
     Export {
+        /// Where to start looking for the active project.
+        from: PathBuf,
+    },
+    /// `nostdb link list|check [--format FORMAT] [--project PATH]`
+    Link {
+        /// What to do.
+        action: link::Action,
+        /// How to write the report.
+        format: Format,
         /// Where to start looking for the active project.
         from: PathBuf,
     },
@@ -215,6 +225,7 @@ impl Invocation {
                 }
                 Ok(Self::Export { from })
             }
+            "link" => parse_link(&remainder),
             "query" => parse_query(&remainder),
             other if other.starts_with('-') => Err(usage(format!("unknown option `{other}`"))),
             other => Err(usage(format!("unknown command `{other}`"))),
@@ -230,6 +241,11 @@ impl Invocation {
             Self::Check { target } => command::check(&target, out, err),
             Self::Convert { input, output } => command::convert(&input, &output, out, err),
             Self::Export { from } => command::export(&from, out, err),
+            Self::Link {
+                action,
+                format,
+                from,
+            } => link::run(action, &from, format, out, err),
             Self::Query {
                 cypher,
                 format,
@@ -244,6 +260,87 @@ impl Invocation {
             },
         }
     }
+}
+
+/// Parses `link`'s operands.
+///
+/// A subcommand the product contract names and this build does not implement is refused
+/// by name, rather than falling through to "unknown". A caller who typed a real command
+/// deserves to be told it is not built yet, not that it does not exist.
+fn parse_link(remainder: &[&str]) -> Result<Invocation, UsageError> {
+    let Some((first, rest)) = remainder.split_first() else {
+        return Err(usage(format!(
+            "`link` needs an action: {:?}",
+            link::Action::IMPLEMENTED
+        )));
+    };
+    let Some(action) = link::Action::from_text(first) else {
+        if link::Action::DEFERRED.contains(first) {
+            return Err(usage(format!(
+                "`link {first}` is not implemented yet: it reconciles the declaration in \
+                 the database with its settings entry, which needs the multi-file journal \
+                 the settings contract requires"
+            )));
+        }
+        return Err(usage(format!(
+            "`{first}` is not a link action; expected one of {:?}",
+            link::Action::IMPLEMENTED
+        )));
+    };
+
+    let (format, from) = parse_shared_options(rest, "link")?;
+    Ok(Invocation::Link {
+        action,
+        format,
+        from,
+    })
+}
+
+/// Parses the `--format` and `--project` options both `link` and `query` accept.
+fn parse_shared_options(
+    remainder: &[&str],
+    command: &str,
+) -> Result<(Format, PathBuf), UsageError> {
+    let mut format = Format::default();
+    let mut from = PathBuf::from(".");
+    let mut index = 0;
+    while index < remainder.len() {
+        let argument = remainder[index];
+        let (name, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(name, value)| (name, Some(value)));
+        match name {
+            "--format" | "--project" => {
+                let value = match inline {
+                    Some(value) => {
+                        index += 1;
+                        value
+                    }
+                    None => {
+                        let Some(value) = remainder.get(index + 1) else {
+                            return Err(usage(format!("`{name}` needs a value")));
+                        };
+                        index += 2;
+                        value
+                    }
+                };
+                if name == "--format" {
+                    format = Format::from_text(value).ok_or_else(|| {
+                        usage(format!(
+                            "`{value}` is not a format; expected one of {:?}",
+                            Format::NAMES
+                        ))
+                    })?;
+                } else {
+                    from = positional(value, "a project path")?;
+                }
+            }
+            other => {
+                return Err(usage(format!("`{command}` does not take `{other}`")));
+            }
+        }
+    }
+    Ok((format, from))
 }
 
 /// Parses `query`'s operands.

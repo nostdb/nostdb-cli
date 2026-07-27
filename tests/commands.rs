@@ -611,3 +611,171 @@ fn a_format_option_may_be_written_either_way_and_may_follow_the_statement() {
             .expect("JSON was asked for");
     }
 }
+
+// -- link ------------------------------------------------------------------------
+
+#[test]
+fn link_list_reports_no_links_for_a_fresh_project() {
+    let dir = TempDir::new("link-empty");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+
+    let listed = nostdb(["link", "list", "--project", &root]);
+    assert_eq!(listed.class, ExitClass::Success, "{}", listed.err);
+    assert!(listed.out.contains("no links declared"), "{}", listed.out);
+
+    let checked = nostdb(["link", "check", "--project", &root]);
+    assert_eq!(checked.class, ExitClass::Success);
+}
+
+/// A project whose database declares the given links, written through `.nost`.
+fn project_with_links(label: &str, links: &str) -> TempDir {
+    let dir = TempDir::new(label);
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+    let source = dir.join("seed.nost");
+    fs::write(&source, format!("@nost 2\n\n{links}\nnode a: L {{}}\n")).unwrap();
+    let converted = nostdb([
+        "convert",
+        source.to_str().unwrap(),
+        dir.join(".nostdb/root.nostdb").to_str().unwrap(),
+    ]);
+    assert_eq!(converted.class, ExitClass::Success, "{}", converted.err);
+    dir
+}
+
+#[test]
+fn link_list_succeeds_over_a_broken_link_and_check_does_not() {
+    let dir = project_with_links("link-broken", "@link \"./absent.nostdb\"\n");
+    let root = dir.path().to_string_lossy().into_owned();
+
+    // list reports and does not judge.
+    let listed = nostdb(["link", "list", "--project", &root]);
+    assert_eq!(listed.class, ExitClass::Success, "{}", listed.err);
+    assert!(listed.out.contains("LINK_UNAVAILABLE"), "{}", listed.out);
+    assert!(listed.err.contains("LINK_UNAVAILABLE"), "{}", listed.err);
+
+    // check is the one that judges.
+    let checked = nostdb(["link", "check", "--project", &root]);
+    assert_eq!(checked.class, ExitClass::Unavailable);
+    assert!(checked.err.contains("LINK_UNAVAILABLE"), "{}", checked.err);
+}
+
+#[test]
+fn link_list_reports_a_reachable_link_as_opened() {
+    let target = TempDir::new("link-target");
+    let target_root = target.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &target_root]).class, ExitClass::Success);
+
+    let dir = TempDir::new("link-reachable");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+    let source = dir.join("seed.nost");
+    // The locator resolves from the database's directory, which is `.nostdb`.
+    fs::write(
+        &source,
+        format!(
+            "@nost 2\n\n@link \"{}\" as target\n\nnode a: L {{}}\n",
+            target.path().join(".nostdb/root.nostdb").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        nostdb([
+            "convert",
+            source.to_str().unwrap(),
+            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+        ])
+        .class,
+        ExitClass::Success
+    );
+
+    let listed = nostdb(["link", "list", "--format", "json", "--project", &root]);
+    assert_eq!(listed.class, ExitClass::Success, "{}", listed.err);
+    let parsed: serde_json::Value = serde_json::from_str(&listed.out).expect("JSON");
+    assert_eq!(
+        parsed["summary"]["linked_databases_opened"], 1,
+        "{}",
+        listed.out
+    );
+    assert_eq!(parsed["summary"]["partial"], false);
+    assert_eq!(parsed["links"][0]["available"], true);
+    assert_eq!(parsed["links"][0]["alias"], "target");
+
+    assert_eq!(
+        nostdb(["link", "check", "--project", &root]).class,
+        ExitClass::Success
+    );
+}
+
+#[test]
+fn a_remote_link_says_there_is_no_provider() {
+    let dir = project_with_links(
+        "link-remote",
+        "@link \"github://example/shared/root.nostdb?ref=main\"\n",
+    );
+    let root = dir.path().to_string_lossy().into_owned();
+    let listed = nostdb(["link", "list", "--format", "json", "--project", &root]);
+    assert_eq!(listed.class, ExitClass::Success, "{}", listed.err);
+    let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+    assert_eq!(parsed["links"][0]["code"], "LINK_UNAVAILABLE");
+    assert!(
+        parsed["links"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("provider"),
+        "{}",
+        listed.out
+    );
+}
+
+#[test]
+fn a_deferred_link_action_says_it_is_not_built_rather_than_unknown() {
+    // A caller who typed a real command deserves to be told it is not built yet.
+    for action in ["add", "remove", "refresh"] {
+        let result = nostdb(["link", action]);
+        assert_eq!(result.class, ExitClass::Usage, "{action}");
+        assert!(
+            result.err.contains("not implemented yet"),
+            "{action}: {}",
+            result.err
+        );
+        assert!(result.err.contains("journal"), "{action}: {}", result.err);
+    }
+}
+
+#[test]
+fn an_unknown_link_action_lists_the_ones_that_exist() {
+    let result = nostdb(["link", "frobnicate"]);
+    assert_eq!(result.class, ExitClass::Usage);
+    assert!(result.err.contains("list"), "{}", result.err);
+    assert!(result.err.contains("check"), "{}", result.err);
+
+    let missing = nostdb(["link"]);
+    assert_eq!(missing.class, ExitClass::Usage);
+    assert!(missing.err.contains("needs an action"), "{}", missing.err);
+}
+
+#[test]
+fn link_reports_an_orphan_settings_entry_without_changing_the_exit_class() {
+    let dir = TempDir::new("link-orphan");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+    fs::write(
+        dir.join(".nostdb/settings.json"),
+        "{\"settings_version\": 1, \"links\": [{\"source\": \"./gone\"}]}",
+    )
+    .unwrap();
+
+    let checked = nostdb(["link", "check", "--project", &root]);
+    assert_eq!(
+        checked.class,
+        ExitClass::Success,
+        "an orphan is about settings, not reachability"
+    );
+    assert!(
+        checked.err.contains("ORPHAN_LINK_SETTINGS"),
+        "{}",
+        checked.err
+    );
+}
