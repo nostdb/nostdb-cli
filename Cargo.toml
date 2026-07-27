@@ -1,0 +1,41 @@
+[package]
+name = "nostdb-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "SSPL-1.0"
+description = "NostDB command-line interface. Source-available under SSPL-1.0."
+publish = false
+
+[lib]
+name = "nostdb_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nostdb"
+path = "src/main.rs"
+
+[lints.rust]
+missing_docs = "deny"
+
+[lints.clippy]
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
+# Dependency review:
+#
+# nostdb-core  Purpose: the Engine. Every database behavior this crate exposes is a
+#              call into it, because only the Engine writes `.nostdb` and no command
+#              may hold a second parser, storage engine, or query engine.
+#              Pinned to an exact commit rather than a branch, because
+#              docs/REPOSITORIES.md requires a reproducible build and forbids a
+#              floating dependency. A path dependency was rejected: this repository
+#              must build on its own, and CI checks it out without its siblings.
+#              Maintenance: this workspace.
+#              License: SSPL-1.0.
+#
+# No argument-parsing crate is used. The command surface is small and its exit
+# classes are normative, so the parser here is written by hand to keep the mapping
+# from a malformed invocation to exit class 2 explicit rather than delegated.
+[dependencies]
+nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "7411b970adea675fba9743ff2f4fd9a858bf3565" }

@@ -2,15 +2,8 @@
 
 # Non-mutating verification for nostdb-cli.
 #
-# This increment connects repository scaffolding only, so the checks below cover
-# scaffolding. Stage 7 increment 2 adds the crate and extends this script with the
-# Rust command set and the ownership-boundary checks, exactly as nostdb-core's
-# verifier grew:
-#
-#   cargo fmt --check
-#   cargo check
-#   cargo clippy --all-targets --all-features -- -D warnings
-#   cargo test --all-targets --all-features
+# Covers the repository shape, the ownership boundaries in AGENTS.md, the Engine
+# dependency pin, and the Rust command set.
 
 set -eu
 
@@ -27,6 +20,11 @@ LICENSE
 .gitignore
 .editorconfig
 .github/workflows/verify.yml
+Cargo.toml
+Cargo.lock
+rust-toolchain.toml
+src/main.rs
+src/lib.rs
 "
 
 for required_file in $required_files; do
@@ -43,6 +41,8 @@ README.md
 .gitignore
 .editorconfig
 .github/workflows/verify.yml
+Cargo.toml
+rust-toolchain.toml
 scripts/verify-repository.sh
 "
 
@@ -91,6 +91,17 @@ fi
 if [ -e docs/PRD.md ]; then
   echo "the PRD lives once, in the root superproject" >&2
   exit 1
+fi
+
+# The Engine dependency is pinned to an exact commit. docs/REPOSITORIES.md requires a
+# reproducible build and forbids following a floating branch, and a `branch =` or `tag =`
+# dependency would do exactly that. A path dependency would break this repository's
+# promise to build without its siblings, which is what CI checks out.
+if grep -q 'nostdb-core' Cargo.toml; then
+  if ! grep -qE '^nostdb-core = \{ git = "https://github.com/nostdb/nostdb-core\.git", rev = "[0-9a-f]{40}" \}$' Cargo.toml; then
+    echo "nostdb-core must be pinned to an exact 40-character commit over https" >&2
+    exit 1
+  fi
 fi
 
 git diff --check

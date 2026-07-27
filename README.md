@@ -35,8 +35,30 @@ defines once.
 
 ## Current status
 
-Repository scaffolding only. The command surface lands in Stage 7 increment 2; see the
-implementation progress record in the root superproject.
+The first commands are implemented:
+
+```text
+nostdb help [COMMAND]
+nostdb init [PATH]
+nostdb check TARGET
+nostdb convert INPUT OUTPUT
+nostdb export --nost [PATH]
+nostdb --version [--json]
+```
+
+`plan`, `build`, `apply`, `sync`, `query`, `link`, `catalog`, `server`, `plugin`, and
+`view` are not implemented yet. See the implementation progress record in the root
+superproject for which increment owns each.
+
+## The Engine dependency
+
+`nostdb-core` is a git dependency pinned to an exact commit rather than a branch. This
+repository has to build without its siblings checked out, which rules out a path
+dependency, and a reproducible build rules out following a branch. The verifier rejects
+both, and a short commit hash too.
+
+Raising the pin is a deliberate act: change the `rev` in `Cargo.toml`, run the verifier,
+and record it in the root progress file alongside the submodule pin.
 
 ## Product contract
 
