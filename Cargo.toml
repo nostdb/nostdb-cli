@@ -44,8 +44,18 @@ missing_panics_doc = "deny"
 # No argument-parsing crate is used. The command surface is small and its exit
 # classes are normative, so the parser here is written by hand to keep the mapping
 # from a malformed invocation to exit class 2 explicit rather than delegated.
+# nostdb-server  Purpose: the catalog type and the protocol's framing and messages. AGENTS.md
+#                prohibits this repository from owning a named-database catalog or an IPC
+#                transport and permits it to own the daemon *client*, so the client is here and
+#                the things it speaks are imported rather than reimplemented. A second catalog
+#                writer or a second framing would be exactly the duplication the root contract
+#                forbids, and the two would drift on the first change to either.
+#                Pinned to an exact commit, for the same reason as the Engine.
+#                Maintenance: this workspace.
+#                License: SSPL-1.0.
 [dependencies]
 serde_json = "1"
+nostdb-server = { git = "https://github.com/nostdb/nostdb-server.git", rev = "2ee27a0ccf225ce1b0cf01826b9cd0f438d4d10d" }
 nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "7bf7006b44c23b8ed4f3e40d32281ad0660b2dfd" }
 
 [dev-dependencies]

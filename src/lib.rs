@@ -22,12 +22,14 @@
 
 pub mod apply;
 pub mod build;
+pub mod catalog;
 pub mod command;
 pub mod exit;
 pub mod link;
 pub mod output;
 pub mod plan;
 pub mod query;
+pub mod server;
 pub mod sync;
 
 pub use exit::ExitClass;
@@ -126,6 +128,16 @@ pub enum Invocation {
         from: PathBuf,
         /// How to write the report.
         format: Format,
+    },
+    /// `nostdb catalog add|remove|list [OPERANDS]`
+    Catalog {
+        /// What to do to the catalog.
+        action: crate::catalog::Action,
+    },
+    /// `nostdb server start|status|stop|run`
+    Server {
+        /// What to do to the daemon.
+        action: crate::server::Action,
     },
     /// `nostdb sync [PATH]`
     Sync {
@@ -286,6 +298,12 @@ impl Invocation {
                 let (format, from) = parse_shared_options(&remainder, "plan")?;
                 Ok(Self::Plan { from, format })
             }
+            "catalog" => crate::catalog::parse(&remainder)
+                .map(|action| Self::Catalog { action })
+                .map_err(usage),
+            "server" => crate::server::parse(&remainder)
+                .map(|action| Self::Server { action })
+                .map_err(usage),
             "sync" => match remainder.as_slice() {
                 [] => Ok(Self::Sync {
                     from: PathBuf::from("."),
@@ -322,6 +340,19 @@ impl Invocation {
                 rebuild,
             } => build::run(&from, format, rebuild, out, err),
             Self::Plan { from, format } => plan::run(&from, format, out, err),
+            Self::Catalog { action } => {
+                // The catalog is per operating-system user and lives at a fixed location, so it is
+                // resolved here rather than taken as an argument. A `--catalog` flag would let one
+                // invocation register a name another could never see.
+                match nostdb_server::catalog::Catalog::default_path() {
+                    Ok(path) => catalog::execute(&action, &path, out, err),
+                    Err(error) => {
+                        let _ = writeln!(err, "{error}");
+                        ExitClass::Io
+                    }
+                }
+            }
+            Self::Server { action } => server::execute(action, out, err),
             Self::Sync { from } => sync::run(&from, out, err),
             Self::Query {
                 cypher,

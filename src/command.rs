@@ -47,6 +47,8 @@ Commands:
   build [PATH] [--rebuild] Analyze the project's source and commit what it found
   apply FILE               Apply a change set to the active project
   sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
+  catalog ACTION           Register, remove, or list named databases for this user
+  server [ACTION]          Run the per-user local daemon, or report on it
   --version [--json]       Report this build and every contract version it supports
 
 Data is written to stdout and diagnostics to stderr, so a machine-readable mode
@@ -227,6 +229,44 @@ a run that could exceed a hard limit never starts.
 
 Exits 8 when the estimated run would cross a configured token limit. Planning
 succeeded in that case; it is the plan that says the build cannot proceed.
+"
+        }
+        "catalog" => {
+            "\
+nostdb catalog add NAME PATH
+nostdb catalog remove NAME
+nostdb catalog list [--format FORMAT]
+
+Maps stable local names to databases on this machine, for this operating-system
+user, in ~/.nostdb/catalog.json. A name is what `--database @name` resolves.
+
+A relative PATH is resolved against the working directory, because the catalog is
+read from wherever a later command happens to run and a relative path there has no
+anchor.
+
+Registering a name does not open the database. A name may point at a disk that is
+not currently mounted, and the failure is reported by the command that tries to use
+it rather than by the catalog.
+
+Needs no running daemon. Registering a name is what someone does before starting
+one.
+"
+        }
+        "server" => {
+            "\
+nostdb server [start|status|stop|run]
+
+Manages the one daemon this operating-system user may run. `nostdb server` is an
+alias for `start`.
+
+  run       Stay in the foreground, for a service manager or for debugging
+  status    Report whether a daemon is running
+
+status asks the operating-system lock rather than the socket. A killed daemon
+leaves its socket file behind, so a socket proves nothing.
+
+The daemon manages named databases. A path-based command never needs it, and
+starting one does not change what any path-based command does.
 "
         }
         "version" | "--version" => {

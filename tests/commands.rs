@@ -1871,3 +1871,135 @@ fn a_missing_change_set_file_is_an_io_failure() {
     assert_eq!(result.class, ExitClass::Io);
     assert!(result.out.is_empty());
 }
+
+/// `catalog add`, `list`, and `remove` against a catalog this test owns.
+///
+/// The catalog location is per operating-system user and fixed, so this drives the module directly
+/// rather than through `run`, which would write the real `~/.nostdb/catalog.json`. A test that
+/// edited a developer's own catalog would be a test with a side effect nobody asked for.
+#[test]
+fn the_catalog_commands_register_list_and_remove_a_name() {
+    use nostdb_cli::catalog::{Action, execute, parse};
+    use nostdb_cli::exit::ExitClass;
+    use nostdb_cli::output::Format;
+
+    let directory = std::env::temp_dir().join(format!("nostdb-cli-catalog-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("scratch");
+    let catalog_path = directory.join("catalog.json");
+    let _ = std::fs::remove_file(&catalog_path);
+    let database = directory.join("root.nostdb");
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    // An absent catalog lists nothing rather than failing.
+    let class = execute(
+        &Action::List {
+            format: Format::Table,
+        },
+        &catalog_path,
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(class, ExitClass::Success);
+    assert!(out.is_empty(), "an empty catalog lists nothing");
+
+    let add = parse(&["add", "work", database.to_str().expect("utf-8")]).expect("parsed");
+    out.clear();
+    assert_eq!(
+        execute(&add, &catalog_path, &mut out, &mut err),
+        ExitClass::Success
+    );
+
+    out.clear();
+    execute(
+        &Action::List {
+            format: Format::Json,
+        },
+        &catalog_path,
+        &mut out,
+        &mut err,
+    );
+    let listed: serde_json::Value =
+        serde_json::from_slice(&out).expect("json output is a JSON document");
+    assert_eq!(listed["databases"][0]["name"], "work");
+    assert_eq!(
+        listed["databases"][0]["path"],
+        database.display().to_string(),
+        "the stored path must be the absolute one"
+    );
+
+    // Removing a name that is not there is a validation failure, not a silent success.
+    out.clear();
+    err.clear();
+    assert_eq!(
+        execute(
+            &Action::Remove {
+                name: "absent".to_owned()
+            },
+            &catalog_path,
+            &mut out,
+            &mut err
+        ),
+        ExitClass::Validation
+    );
+
+    out.clear();
+    assert_eq!(
+        execute(
+            &Action::Remove {
+                name: "work".to_owned()
+            },
+            &catalog_path,
+            &mut out,
+            &mut err
+        ),
+        ExitClass::Success
+    );
+
+    out.clear();
+    execute(
+        &Action::List {
+            format: Format::Table,
+        },
+        &catalog_path,
+        &mut out,
+        &mut err,
+    );
+    assert!(out.is_empty(), "the name was removed");
+}
+
+/// A name the catalog contract refuses is refused here, with class 3 rather than a panic.
+#[test]
+fn the_catalog_refuses_a_name_that_breaks_the_contract() {
+    use nostdb_cli::catalog::{Action, execute};
+    use nostdb_cli::exit::ExitClass;
+    use std::path::PathBuf;
+
+    let directory =
+        std::env::temp_dir().join(format!("nostdb-cli-catalog-bad-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("scratch");
+    let catalog_path = directory.join("catalog.json");
+    let _ = std::fs::remove_file(&catalog_path);
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let class = execute(
+        &Action::Add {
+            name: "work/main".to_owned(),
+            path: PathBuf::from("/srv/db.nostdb"),
+        },
+        &catalog_path,
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(class, ExitClass::Validation);
+    assert!(
+        String::from_utf8_lossy(&err).contains("work/main"),
+        "the refusal must name what was refused"
+    );
+    assert!(
+        !catalog_path.exists(),
+        "a refused add must not create a catalog"
+    );
+}
