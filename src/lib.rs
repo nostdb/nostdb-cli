@@ -20,6 +20,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod apply;
 pub mod build;
 pub mod command;
 pub mod exit;
@@ -100,6 +101,15 @@ pub enum Invocation {
         format: Format,
         /// Where to start looking for the active project.
         from: PathBuf,
+    },
+    /// `nostdb apply FILE [--format FORMAT] [--project PATH]`
+    Apply {
+        /// The change set to read.
+        file: PathBuf,
+        /// Where to start looking for the active project.
+        from: PathBuf,
+        /// How to write the report.
+        format: Format,
     },
     /// `nostdb build [PATH] [--format FORMAT] [--rebuild]`
     Build {
@@ -250,6 +260,14 @@ impl Invocation {
                 Ok(Self::Export { from })
             }
             "link" => parse_link(&remainder),
+            "apply" => {
+                let Some((first, rest)) = remainder.split_first() else {
+                    return Err(usage("`apply` needs a change set file"));
+                };
+                let file = positional(first, "a change set file")?;
+                let (format, from) = parse_shared_options(rest, "apply")?;
+                Ok(Self::Apply { file, from, format })
+            }
             "build" => {
                 let rebuild = remainder.contains(&"--rebuild");
                 let rest: Vec<&str> = remainder
@@ -297,6 +315,7 @@ impl Invocation {
                 format,
                 from,
             } => link::run(&action, &from, format, out, err),
+            Self::Apply { file, from, format } => apply::run(&file, &from, format, out, err),
             Self::Build {
                 from,
                 format,

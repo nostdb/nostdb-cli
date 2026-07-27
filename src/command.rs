@@ -45,6 +45,7 @@ Commands:
   link ACTION              Declare, remove, or report on links to other graphs
   plan [PATH]              Report what a build would do, without doing any of it
   build [PATH] [--rebuild] Analyze the project's source and commit what it found
+  apply FILE               Apply a change set to the active project
   sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
   --version [--json]       Report this build and every contract version it supports
 
@@ -144,6 +145,27 @@ ever part of this database.
 
 `refresh` is not implemented. It advances a remote snapshot to a newer immutable
 commit, and a local link is read live and has no snapshot to advance.
+"
+        }
+        "apply" => {
+            "\
+nostdb apply FILE [--format FORMAT] [--project PATH]
+
+Reads a change set from FILE and applies it. An analyzer builds one from source,
+an AI Skill proposes one, and a person may write one by hand.
+
+Two refusals that are not the same thing. A document that does not satisfy the
+change-set contract exits 3: the file is wrong, and every problem is reported so
+it can be fixed in one pass. A document that is well formed and cannot be applied
+— a stale baseline, an endpoint that is not there, an endpoint in a linked source
+a write may not touch — is a different failure, because satisfying the document
+rules is not permission to apply.
+
+A change set states the generation it was computed against, and one computed
+against a different generation is refused. It resolved identifiers against a graph
+it read, and applying it to a graph that has moved would overwrite work nobody saw.
+
+A failed apply preserves the last valid generation.
 "
         }
         "build" => {

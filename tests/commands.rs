@@ -1715,3 +1715,159 @@ fn a_deleted_file_takes_its_records_out_of_the_database() {
     assert_eq!(result["summary"]["rows"], 1);
     assert_eq!(result["rows"][0][0], "kept");
 }
+
+fn change_set(generation: u64, operations: &str) -> String {
+    format!(
+        r#"{{
+  "change_set_version": 1,
+  "base_generation": {generation},
+  "owner": {{"kind": "user"}},
+  "source_snapshot": "by hand",
+  "operations": [{operations}]
+}}"#
+    )
+}
+
+#[test]
+fn apply_commits_a_hand_written_change_set_and_a_query_finds_it() {
+    let dir = TempDir::new("apply");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    let file = dir.join("change.json");
+    fs::write(
+        &file,
+        change_set(
+            1,
+            r#"{"operation": "upsert_node", "labels": ["Note"],
+                "properties": {"text": "written by hand"},
+                "source_unit": "u_00000000-0000-0000-0000-000000000000", "evidence": []}"#,
+        ),
+    )
+    .unwrap();
+
+    let applied = nostdb([
+        "apply",
+        file.to_str().unwrap(),
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(applied.class, ExitClass::Success, "{}", applied.err);
+    let document: serde_json::Value = serde_json::from_str(&applied.out).unwrap();
+    assert_eq!(document["records"]["nodes_created"], 1);
+    assert_eq!(document["operations"], 1);
+
+    let queried = nostdb([
+        "query",
+        "MATCH (n:Note) RETURN n.text",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    let result: serde_json::Value = serde_json::from_str(&queried.out).unwrap();
+    assert_eq!(result["rows"][0][0], "written by hand");
+}
+
+#[test]
+fn a_malformed_change_set_reports_every_problem_at_once() {
+    // One failed run per mistake would make fixing a batch a loop.
+    let dir = TempDir::new("apply-malformed");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    let file = dir.join("broken.json");
+    fs::write(
+        &file,
+        change_set(
+            1,
+            r#"{"operation": "upsert_node", "labels": [],
+                "source_unit": "u_00000000-0000-0000-0000-000000000000", "evidence": []},
+               {"operation": "frobnicate"}"#,
+        ),
+    )
+    .unwrap();
+
+    let result = nostdb(["apply", file.to_str().unwrap(), "--project", &root]);
+    assert_eq!(result.class, ExitClass::Validation, "{}", result.err);
+    assert!(result.out.is_empty(), "{}", result.out);
+    assert!(result.err.contains("CHANGE_SET_INVALID"), "{}", result.err);
+    assert!(
+        result.err.lines().count() >= 2,
+        "every problem, not the first: {}",
+        result.err
+    );
+}
+
+#[test]
+fn a_change_set_computed_against_another_generation_is_refused_and_changes_nothing() {
+    // It resolved identifiers against a graph it read. Applying it to a graph that has
+    // moved would overwrite work nobody saw.
+    let dir = TempDir::new("apply-stale");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    let before = fs::read(dir.join(".nostdb/root.nostdb")).unwrap();
+
+    let file = dir.join("stale.json");
+    fs::write(
+        &file,
+        change_set(
+            99,
+            r#"{"operation": "upsert_node", "labels": ["Note"],
+                "source_unit": "u_00000000-0000-0000-0000-000000000000", "evidence": []}"#,
+        ),
+    )
+    .unwrap();
+
+    let result = nostdb(["apply", file.to_str().unwrap(), "--project", &root]);
+    assert_ne!(result.class, ExitClass::Success);
+    assert!(result.err.contains("generation"), "{}", result.err);
+    assert_eq!(
+        fs::read(dir.join(".nostdb/root.nostdb")).unwrap(),
+        before,
+        "a refused apply preserves the last valid generation byte for byte"
+    );
+}
+
+#[test]
+fn an_unreadable_change_set_version_says_so_rather_than_naming_an_operation() {
+    let dir = TempDir::new("apply-version");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    let file = dir.join("future.json");
+    fs::write(&file, r#"{"change_set_version": 99, "operations": []}"#).unwrap();
+
+    let result = nostdb(["apply", file.to_str().unwrap(), "--project", &root]);
+    assert_eq!(result.class, ExitClass::Validation);
+    assert!(
+        result.err.contains("CHANGE_SET_VERSION_UNSUPPORTED"),
+        "{}",
+        result.err
+    );
+    assert!(
+        !result.err.contains("CHANGE_SET_INVALID"),
+        "naming a malformed operation would send somebody looking for one: {}",
+        result.err
+    );
+}
+
+#[test]
+fn apply_without_a_file_is_a_usage_mistake() {
+    let dir = TempDir::new("apply-no-file");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    let result = nostdb(["apply", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Usage);
+    assert!(result.out.is_empty());
+}
+
+#[test]
+fn a_missing_change_set_file_is_an_io_failure() {
+    let dir = TempDir::new("apply-absent");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    let absent = dir.join("not-here.json");
+    let result = nostdb(["apply", absent.to_str().unwrap(), "--project", &root]);
+    assert_eq!(result.class, ExitClass::Io);
+    assert!(result.out.is_empty());
+}
