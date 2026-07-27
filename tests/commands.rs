@@ -1654,3 +1654,64 @@ fn a_build_and_a_plan_agree_about_which_files_they_cover() {
         "the same tree is the same snapshot to both"
     );
 }
+
+#[test]
+fn a_second_build_reuses_everything_and_says_so() {
+    let dir = TempDir::new("build-reuse");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("lib.rs"), "fn only() {}\n").unwrap();
+    nostdb(["build", "--project", &root]);
+
+    let again = nostdb(["build", "--format", "json", "--project", &root]);
+    assert_eq!(again.class, ExitClass::Success, "{}", again.err);
+    let document: serde_json::Value = serde_json::from_str(&again.out).unwrap();
+    assert_eq!(document["analyzed_files"], 0);
+    assert_eq!(document["reused_files"], 1);
+    assert!(
+        again.err.contains("matched the digest already recorded"),
+        "{}",
+        again.err
+    );
+}
+
+#[test]
+fn rebuild_re_reads_what_reuse_would_have_skipped() {
+    let dir = TempDir::new("build-forced");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("lib.rs"), "fn only() {}\n").unwrap();
+    nostdb(["build", "--project", &root]);
+
+    let forced = nostdb(["build", "--rebuild", "--format", "json", "--project", &root]);
+    assert_eq!(forced.class, ExitClass::Success, "{}", forced.err);
+    let document: serde_json::Value = serde_json::from_str(&forced.out).unwrap();
+    assert_eq!(document["analyzed_files"], 1);
+    assert_eq!(document["reused_files"], 0);
+}
+
+#[test]
+fn a_deleted_file_takes_its_records_out_of_the_database() {
+    let dir = TempDir::new("build-deleted");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("kept.rs"), "fn kept() {}\n").unwrap();
+    fs::write(dir.join("gone.rs"), "fn departed() {}\n").unwrap();
+    nostdb(["build", "--project", &root]);
+
+    fs::remove_file(dir.join("gone.rs")).unwrap();
+    let rebuilt = nostdb(["build", "--project", &root]);
+    assert_eq!(rebuilt.class, ExitClass::Success, "{}", rebuilt.err);
+
+    let queried = nostdb([
+        "query",
+        "MATCH (f:Function) RETURN f.name",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    let result: serde_json::Value = serde_json::from_str(&queried.out).unwrap();
+    assert_eq!(result["summary"]["rows"], 1);
+    assert_eq!(result["rows"][0][0], "kept");
+}

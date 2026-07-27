@@ -101,12 +101,14 @@ pub enum Invocation {
         /// Where to start looking for the active project.
         from: PathBuf,
     },
-    /// `nostdb build [PATH] [--format FORMAT]`
+    /// `nostdb build [PATH] [--format FORMAT] [--rebuild]`
     Build {
         /// Where to start looking for the active project.
         from: PathBuf,
         /// How to write the report.
         format: Format,
+        /// Whether to re-read every file rather than reusing what is recorded.
+        rebuild: bool,
     },
     /// `nostdb plan [PATH] [--format FORMAT]`
     Plan {
@@ -249,8 +251,18 @@ impl Invocation {
             }
             "link" => parse_link(&remainder),
             "build" => {
-                let (format, from) = parse_shared_options(&remainder, "build")?;
-                Ok(Self::Build { from, format })
+                let rebuild = remainder.contains(&"--rebuild");
+                let rest: Vec<&str> = remainder
+                    .iter()
+                    .copied()
+                    .filter(|word| *word != "--rebuild")
+                    .collect();
+                let (format, from) = parse_shared_options(&rest, "build")?;
+                Ok(Self::Build {
+                    from,
+                    format,
+                    rebuild,
+                })
             }
             "plan" => {
                 let (format, from) = parse_shared_options(&remainder, "plan")?;
@@ -285,7 +297,11 @@ impl Invocation {
                 format,
                 from,
             } => link::run(&action, &from, format, out, err),
-            Self::Build { from, format } => build::run(&from, format, out, err),
+            Self::Build {
+                from,
+                format,
+                rebuild,
+            } => build::run(&from, format, rebuild, out, err),
             Self::Plan { from, format } => plan::run(&from, format, out, err),
             Self::Sync { from } => sync::run(&from, out, err),
             Self::Query {

@@ -137,7 +137,7 @@ dependencies = [
 [[package]]
 name = "nostdb-core"
 version = "0.1.0"
-source = "git+https://github.com/nostdb/nostdb-core.git?rev=91ed367e7f7e5a3b3ea99b2a02e34dbac6967909#91ed367e7f7e5a3b3ea99b2a02e34dbac6967909"
+source = "git+https://github.com/nostdb/nostdb-core.git?rev=ea400a2b4eddcf19f6353157db433b445c97254e#ea400a2b4eddcf19f6353157db433b445c97254e"
 dependencies = [
  "serde_json",
  "sha2",

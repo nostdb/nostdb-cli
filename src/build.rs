@@ -6,6 +6,9 @@
 //! Structural extraction spends no external AI tokens, so this command needs no budget
 //! check and cannot be refused by one. `nostdb plan` is where the cost of the *optional*
 //! enrichment that follows is shown, and that is a separate step this build does not run.
+//!
+//! Reuse is the default: a file whose bytes match the digest already recorded is not
+//! re-read. `--rebuild` asks for the work to be redone anyway.
 
 use crate::exit::ExitClass;
 use crate::output::Format;
@@ -27,6 +30,7 @@ fn as_json(report: &BuildReport) -> Value {
         "generation": report.generation.get(),
         "source_revision": report.revision,
         "analyzed_files": report.analyzed_files,
+        "reused_files": report.reused_files,
         "records": {
             "nodes_created": summary.nodes_created,
             "nodes_updated": summary.nodes_updated,
@@ -53,8 +57,8 @@ fn as_table(report: &BuildReport, out: &mut dyn Write) {
     let _ = writeln!(out, "revision   {}", report.revision);
     let _ = writeln!(
         out,
-        "analyzed   {} files, structural {}",
-        report.analyzed_files, report.coverage.structural
+        "analyzed   {} files, {} reused, structural {}",
+        report.analyzed_files, report.reused_files, report.coverage.structural
     );
     let _ = writeln!(
         out,
@@ -75,7 +79,13 @@ fn as_table(report: &BuildReport, out: &mut dyn Write) {
 }
 
 /// Runs `nostdb build [PATH]`.
-pub fn run(from: &Path, format: Format, out: &mut dyn Write, err: &mut dyn Write) -> ExitClass {
+pub fn run(
+    from: &Path,
+    format: Format,
+    rebuild: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitClass {
     let project = match Project::discover(from, global_settings_path().as_deref()) {
         Ok(project) => project,
         Err(error) => {
@@ -83,7 +93,7 @@ pub fn run(from: &Path, format: Format, out: &mut dyn Write, err: &mut dyn Write
             return ExitClass::for_project_error(&error);
         }
     };
-    let report = match project.build(&registry(), &ScanOptions::default()) {
+    let report = match project.build(&registry(), &ScanOptions::default(), rebuild) {
         Ok(report) => report,
         Err(error) => {
             // A failed build preserves the last valid generation, which the Engine
@@ -105,7 +115,12 @@ pub fn run(from: &Path, format: Format, out: &mut dyn Write, err: &mut dyn Write
         Format::Table | Format::Csv => as_table(&report, out),
     }
 
-    if report.analyzed_files == 0 {
+    if report.analyzed_files == 0 && report.reused_files > 0 {
+        let _ = writeln!(
+            err,
+            "note: every file matched the digest already recorded, so nothing was rebuilt"
+        );
+    } else if report.analyzed_files == 0 {
         // Not a failure. A project with nothing this build reads is a fact about the
         // project, and exiting non-zero over it would break a pipeline that runs `build`
         // before knowing what a repository contains.

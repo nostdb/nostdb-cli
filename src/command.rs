@@ -44,7 +44,7 @@ Commands:
   query [CYPHER]           Run one statement, or open the REPL when none is given
   link ACTION              Declare, remove, or report on links to other graphs
   plan [PATH]              Report what a build would do, without doing any of it
-  build [PATH]             Analyze the project's source and commit what it found
+  build [PATH] [--rebuild] Analyze the project's source and commit what it found
   sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
   --version [--json]       Report this build and every contract version it supports
 
@@ -148,7 +148,7 @@ commit, and a local link is read live and has no snapshot to advance.
         }
         "build" => {
             "\
-nostdb build [PATH] [--format FORMAT] [--project PATH]
+nostdb build [PATH] [--rebuild] [--format FORMAT] [--project PATH]
 
 Analyzes the project's source and commits the structural facts it found: files,
 the items they declare, what contains what, and which calls resolve.
@@ -156,6 +156,11 @@ the items they declare, what contains what, and which calls resolve.
 Structural extraction spends no external AI tokens, so this cannot be refused by
 a budget. Optional AI enrichment is a separate step; `nostdb plan` is where its
 cost is shown.
+
+A file whose bytes match the digest already recorded is not re-read. `--rebuild`
+asks for the work to be redone anyway. When a re-read file adds or removes a
+declared name, every file is read again: an edge from a file this run skipped may
+have become right or wrong, and there is no way to tell without looking.
 
 A rebuild replaces only this analyzer's own contributions for the files it read.
 Anything a person contributed to the same record survives, and a record the
