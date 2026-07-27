@@ -48,7 +48,9 @@ nostdb link list|check [--format FORMAT] [--project PATH]
 nostdb --version [--json]
 ```
 
-`query` runs one statement, or opens a REPL when none is given. The REPL reads Cypher
+`query` runs one statement, or opens a REPL when none is given. A read sees the root and
+every reachable linked source; a write touches the root alone, and one naming a linked
+record is refused with `LINKED_DATABASE_READ_ONLY`. The REPL reads Cypher
 terminated by `;` across as many lines as needed and accepts `:help`, `:begin`,
 `:commit`, `:rollback`, `:database`, and `:quit`.
 

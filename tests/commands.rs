@@ -779,3 +779,149 @@ fn link_reports_an_orphan_settings_entry_without_changing_the_exit_class() {
         checked.err
     );
 }
+
+#[test]
+fn a_query_sees_records_from_a_linked_source() {
+    // The gap this closes: `link list` reported an opened source while `query` saw none.
+    let target = TempDir::new("federated-target");
+    let target_root = target.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &target_root]).class, ExitClass::Success);
+    assert_eq!(
+        nostdb([
+            "query",
+            "CREATE (n:Function {name: \"from-child\"})",
+            "--project",
+            &target_root
+        ])
+        .class,
+        ExitClass::Success
+    );
+
+    let dir = TempDir::new("federated-root");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+    let source = dir.join("seed.nost");
+    fs::write(
+        &source,
+        format!(
+            "@nost 2\n\n@link \"{}\" as child\n\nnode local: Function {{\n  name: \"from-root\",\n}}\n",
+            target.path().join(".nostdb/root.nostdb").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        nostdb([
+            "convert",
+            source.to_str().unwrap(),
+            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+        ])
+        .class,
+        ExitClass::Success
+    );
+
+    let result = nostdb([
+        "query",
+        "MATCH (n:Function) RETURN n.name, nostdb.source(n) ORDER BY n.name",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("JSON");
+
+    assert_eq!(parsed["summary"]["rows"], 2, "{}", result.out);
+    assert_eq!(parsed["summary"]["linked_databases_opened"], 1);
+    assert_eq!(parsed["summary"]["partial"], false);
+    assert_eq!(parsed["rows"][0][0], "from-child");
+    assert_eq!(parsed["rows"][1][0], "from-root");
+    // And each row says which source it came through.
+    assert_ne!(parsed["rows"][0][1], parsed["rows"][1][1]);
+}
+
+#[test]
+fn a_query_over_a_broken_link_is_partial_and_still_answers() {
+    let dir = project_with_links("federated-broken", "@link \"./absent.nostdb\"\n");
+    let root = dir.path().to_string_lossy().into_owned();
+
+    let result = nostdb([
+        "query",
+        "MATCH (n) RETURN n.name",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("JSON");
+    assert_eq!(parsed["summary"]["partial"], true, "{}", result.out);
+    assert_eq!(
+        parsed["summary"]["rows"], 1,
+        "the reachable row is still returned"
+    );
+    assert_eq!(parsed["warnings"][0]["code"], "LINK_UNAVAILABLE");
+}
+
+#[test]
+fn a_write_naming_a_linked_record_is_refused_and_the_target_is_untouched() {
+    let target = TempDir::new("federated-readonly-target");
+    let target_root = target.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &target_root]).class, ExitClass::Success);
+    assert_eq!(
+        nostdb([
+            "query",
+            "CREATE (n:Linked {name: \"original\"})",
+            "--project",
+            &target_root
+        ])
+        .class,
+        ExitClass::Success
+    );
+
+    let dir = TempDir::new("federated-readonly-root");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+    let source = dir.join("seed.nost");
+    fs::write(
+        &source,
+        format!(
+            "@nost 2\n\n@link \"{}\"\n\nnode local: Function {{}}\n",
+            target.path().join(".nostdb/root.nostdb").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        nostdb([
+            "convert",
+            source.to_str().unwrap(),
+            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+        ])
+        .class,
+        ExitClass::Success
+    );
+
+    let refused = nostdb([
+        "query",
+        "MATCH (n:Linked) SET n.name = \"changed\"",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(refused.class, ExitClass::Validation);
+    assert!(
+        refused.err.contains("LINKED_DATABASE_READ_ONLY"),
+        "{}",
+        refused.err
+    );
+
+    // The linked database still says what it said.
+    let unchanged = nostdb([
+        "query",
+        "MATCH (n:Linked) RETURN n.name",
+        "--format",
+        "json",
+        "--project",
+        &target_root,
+    ]);
+    let parsed: serde_json::Value = serde_json::from_str(&unchanged.out).unwrap();
+    assert_eq!(parsed["rows"][0][0], "original");
+}

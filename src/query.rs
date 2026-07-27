@@ -18,7 +18,8 @@ use crate::output::{self, Format};
 use nostdb_core::QueryError;
 use nostdb_core::cypher::{Query, parse};
 use nostdb_core::diagnostic::Severity;
-use nostdb_core::execute::Parameters;
+use nostdb_core::execute::{LinkedSource, Parameters};
+use nostdb_core::federation::Federation;
 use nostdb_core::project::{Project, ProjectError};
 use nostdb_core::result::ResultEnvelope;
 use nostdb_core::storage::Database;
@@ -84,8 +85,12 @@ fn emit(envelope: &ResultEnvelope, format: Format, out: &mut dyn Write, err: &mu
     }
 }
 
-/// Opens the database a query should run against.
-fn open(from: &Path, err: &mut dyn Write) -> Result<Database, ExitClass> {
+/// Opens the database a query should run against, and resolves its links.
+///
+/// The federation is resolved once per invocation rather than per statement. A query
+/// snapshot pins each linked source, which is what the product contract requires: a
+/// second statement in the same session must not see a link that changed underneath it.
+fn open(from: &Path, err: &mut dyn Write) -> Result<(Database, Federation), ExitClass> {
     let global = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| Path::new(&home).join(".nostdb").join("settings.json"));
@@ -93,10 +98,32 @@ fn open(from: &Path, err: &mut dyn Write) -> Result<Database, ExitClass> {
         let _ = writeln!(err, "{error}");
         project_class(&error)
     })?;
-    project.open_database().map_err(|error| {
+    let federation = project.resolve_links().map_err(|error| {
         let _ = writeln!(err, "{error}");
         project_class(&error)
-    })
+    })?;
+    let database = project.open_database().map_err(|error| {
+        let _ = writeln!(err, "{error}");
+        project_class(&error)
+    })?;
+    Ok((database, federation))
+}
+
+/// The linked sources a query may read, taken from a resolved federation.
+///
+/// Index zero is the root, which the transaction already holds, so it is skipped.
+fn linked_sources(federation: &Federation) -> Vec<LinkedSource<'_>> {
+    federation
+        .sources
+        .iter()
+        .skip(1)
+        .filter_map(|source| {
+            Some(LinkedSource {
+                locator: source.locator.as_ref()?,
+                graph: &source.graph,
+            })
+        })
+        .collect()
 }
 
 /// `nostdb query CYPHER`, immediate mode.
@@ -116,20 +143,22 @@ pub fn immediate(
             return query_class(&error);
         }
     };
-    let mut database = match open(from, err) {
-        Ok(database) => database,
+    let (mut database, federation) = match open(from, err) {
+        Ok(opened) => opened,
         Err(class) => return class,
     };
-    run_one(&mut database, &query, format, out, err)
+    run_one(&mut database, &federation, &query, format, out, err)
 }
 
 fn run_one(
     database: &mut Database,
+    federation: &Federation,
     query: &Query,
     format: Format,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitClass {
+    let linked = linked_sources(federation);
     let mut transaction = match Transaction::begin(database) {
         Ok(transaction) => transaction,
         Err(error) => {
@@ -137,7 +166,7 @@ fn run_one(
             return transaction_class(&error);
         }
     };
-    let result = match transaction.run(query, &Parameters::new()) {
+    let result = match transaction.run_federated(query, &Parameters::new(), &linked) {
         Ok(result) => result,
         Err(error) => {
             report_query_error(&error, err);
@@ -157,9 +186,20 @@ fn run_one(
 
     // A read reports no write summary at all, which is the distinction the result
     // contract draws between "changed nothing" and "could not change anything".
-    let envelope = ResultEnvelope::new(result, generation, wrote.then_some(writes));
+    let mut envelope = ResultEnvelope::new(result, generation, wrote.then_some(writes));
+    describe_federation(&mut envelope, federation);
     emit(&envelope, format, out, err);
     ExitClass::Success
+}
+
+/// Fills the envelope's federation fields from a resolved set.
+///
+/// The warnings are appended rather than replaced, because a query may have produced its
+/// own and both belong in the same envelope. `partial` follows from the three link codes,
+/// so setting the warnings is what sets it.
+fn describe_federation(envelope: &mut ResultEnvelope, federation: &Federation) {
+    envelope.linked_databases_opened = federation.linked_databases_opened();
+    envelope.warnings.extend(federation.warnings());
 }
 
 const REPL_HELP: &str = "\
@@ -232,8 +272,8 @@ pub fn repl(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitClass {
-    let mut database = match open(from, err) {
-        Ok(database) => database,
+    let (mut database, federation) = match open(from, err) {
+        Ok(opened) => opened,
         Err(class) => return class,
     };
     let path = database.path().display().to_string();
@@ -260,7 +300,9 @@ pub fn repl(
                 let _ = writeln!(err, "error: no transaction is open; use :begin first");
             }
             ":begin" => {
-                if let Some(class) = transaction_session(&mut database, format, input, out, err) {
+                if let Some(class) =
+                    transaction_session(&mut database, &federation, format, input, out, err)
+                {
                     return class;
                 }
             }
@@ -275,7 +317,7 @@ pub fn repl(
                         continue;
                     }
                 };
-                run_one(&mut database, &query, format, out, err);
+                run_one(&mut database, &federation, &query, format, out, err);
             }
         }
     }
@@ -287,6 +329,7 @@ pub fn repl(
 /// closed and the outer loop should continue.
 fn transaction_session(
     database: &mut Database,
+    federation: &Federation,
     format: Format,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
@@ -299,6 +342,7 @@ fn transaction_session(
             return Some(transaction_class(&error));
         }
     };
+    let linked = linked_sources(federation);
     let base = transaction.base_generation();
     let _ = writeln!(out, "transaction open at generation {}", base.get());
 
@@ -371,16 +415,17 @@ fn transaction_session(
                         continue;
                     }
                 };
-                match transaction.run(&query, &Parameters::new()) {
+                match transaction.run_federated(&query, &Parameters::new(), &linked) {
                     Ok(result) => {
                         // Inside a transaction nothing is committed yet, so the generation
                         // shown is the one the transaction began at.
                         let writes = transaction.writes();
-                        let envelope = ResultEnvelope::new(
+                        let mut envelope = ResultEnvelope::new(
                             result,
                             base,
                             (!writes.is_empty()).then_some(writes),
                         );
+                        describe_federation(&mut envelope, federation);
                         emit(&envelope, format, out, err);
                     }
                     Err(error) => report_query_error(&error, err),
