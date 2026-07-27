@@ -7,8 +7,10 @@
 //! check and cannot be refused by one. `nostdb plan` is where the cost of the *optional*
 //! enrichment that follows is shown, and that is a separate step this build does not run.
 //!
-//! Reuse is the default: a file whose bytes match the digest already recorded is not
-//! re-read. `--rebuild` asks for the work to be redone anyway.
+//! A tree where every file matches the digest already recorded is not read at all.
+//! Anything less than that — one changed file, one deleted file — reads everything, because
+//! resolving references against a mixture of fresh and reused records lost edges and the
+//! reason is not yet understood. `--rebuild` reads everything unconditionally.
 
 use crate::exit::ExitClass;
 use crate::output::Format;

@@ -157,10 +157,11 @@ Structural extraction spends no external AI tokens, so this cannot be refused by
 a budget. Optional AI enrichment is a separate step; `nostdb plan` is where its
 cost is shown.
 
-A file whose bytes match the digest already recorded is not re-read. `--rebuild`
-asks for the work to be redone anyway. When a re-read file adds or removes a
-declared name, every file is read again: an edge from a file this run skipped may
-have become right or wrong, and there is no way to tell without looking.
+A tree where every file matches the digest already recorded is not read at all,
+and commits nothing. Anything less than that reads everything: resolving
+references against a mixture of freshly read and previously recorded facts turned
+out to lose edges, and until that is understood a build that reads one file reads
+them all. `--rebuild` reads everything unconditionally.
 
 A rebuild replaces only this analyzer's own contributions for the files it read.
 Anything a person contributed to the same record survives, and a record the
