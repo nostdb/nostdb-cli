@@ -24,11 +24,13 @@ fn global_settings_path() -> Option<PathBuf> {
 
 /// The analyzers this build ships.
 ///
-/// Empty. No deterministic analyzer is registered yet, so every language is unsupported
-/// and the plan says so. That is the honest report rather than a missing feature hidden
-/// behind a zero: the counts are correct now and stay correct the moment one registers.
+/// The Engine owns the list. Falling back to an empty registry rather than failing is
+/// deliberate: the only way `builtin_registry` can refuse is if two analyzers declared the
+/// same language, which is a defect in this build and not something a user did. Reporting
+/// every language as unsupported is then wrong but harmless, where refusing to plan at all
+/// would block a command that spends nothing.
 fn registry() -> CapabilityRegistry {
-    CapabilityRegistry::new()
+    nostdb_core::analyze::builtin_registry().unwrap_or_else(|_| CapabilityRegistry::new())
 }
 
 fn as_json(report: &PlanReport) -> Value {
@@ -197,12 +199,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn this_build_registers_no_analyzer_yet() {
-        // A guard, not a goal. When the first analyzer lands this fails, and the message
-        // is the reminder to update the plan's own tests rather than only the analyzer's.
-        assert!(
-            registry().languages().is_empty(),
-            "an analyzer was registered; the plan's expected counts need revisiting"
+    fn the_registry_this_command_uses_is_the_engines() {
+        // Not a second list. A language the Engine can analyze and this command calls
+        // unsupported would make `plan` disagree with `build` about the same file.
+        assert_eq!(
+            registry().languages(),
+            nostdb_core::analyze::builtin_registry()
+                .expect("the built-in registry")
+                .languages()
         );
+        assert!(registry().languages().contains(&"rust"));
+    }
+
+    #[test]
+    fn a_registered_language_is_reported_as_deterministic() {
+        assert!(
+            registry().precision("rust").is_deterministic(),
+            "structural extraction of supported source spends no AI tokens, and the plan \
+             has to be able to say so"
+        );
+        assert!(!registry().precision("python").is_deterministic());
     }
 }

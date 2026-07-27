@@ -1351,15 +1351,40 @@ fn plan_reports_what_a_build_would_do_and_accounts_for_every_file() {
     assert_eq!(document["plan_version"], 1);
     assert_eq!(document["scanned_files"], 2, "{}", result.out);
     assert_eq!(
-        document["unsupported_files"], 2,
-        "no analyzer is registered yet, so both are unsupported"
+        document["structural_files"], 1,
+        "the Rust file is covered deterministically: {}",
+        result.out
     );
     assert_eq!(
-        document["structural_files"], 0,
-        "a count this build cannot honestly report is zero, not omitted"
+        document["unsupported_files"], 1,
+        "the Python file is not, and stays eligible for AI instead"
     );
-    assert_eq!(document["semantic_candidates"], 2);
+    assert_eq!(
+        document["semantic_candidates"], 1,
+        "a file a deterministic analyzer covers is not a candidate for enrichment"
+    );
     assert_eq!(document["semantic_cache_hits"], 0);
+
+    let languages: Vec<(&str, &str)> = document["languages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["language"].as_str().unwrap(),
+                entry["precision"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        languages,
+        [
+            ("python", "unsupported"),
+            ("rust", "deterministic syntactic")
+        ],
+        "precision travels with every language, so nobody can read a syntactic fact as a \
+         resolved one"
+    );
 
     let reasons: Vec<&str> = document["skipped"]
         .as_array()
@@ -1459,10 +1484,11 @@ fn plan_writes_the_report_to_stdout_and_every_note_to_stderr() {
 }
 
 #[test]
-fn plan_says_why_everything_is_unsupported_rather_than_leaving_a_reader_to_guess() {
-    // "0 covered, 48 unsupported" reads as a strange project unless the report says the
-    // build is what has no analyzer.
-    let dir = TempDir::new("plan-no-analyzer");
+fn plan_reports_structural_coverage_once_an_analyzer_reads_the_language() {
+    // This is the whole pipeline joined up for the first time: the scanner names the
+    // language, the registry says an analyzer covers it, and the plan reports coverage
+    // rather than a gap.
+    let dir = TempDir::new("plan-covered");
     let root = dir.path().to_string_lossy().into_owned();
     nostdb(["init", &root]);
     fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
@@ -1470,8 +1496,23 @@ fn plan_says_why_everything_is_unsupported_rather_than_leaving_a_reader_to_guess
     let result = nostdb(["plan", "--project", &root]);
     assert_eq!(result.class, ExitClass::Success, "{}", result.err);
     assert!(
-        result.err.contains("no deterministic analyzer"),
+        result.out.contains("1 covered, 0 unsupported"),
         "{}",
+        result.out
+    );
+    assert!(
+        result.out.contains("deterministic syntactic"),
+        "the precision is shown, not just the count: {}",
+        result.out
+    );
+    assert!(
+        !result.err.contains("no deterministic analyzer"),
+        "the build has one now: {}",
+        result.err
+    );
+    assert!(
+        !result.err.contains("no token limit"),
+        "nothing is a candidate for enrichment, so nothing would be asked about: {}",
         result.err
     );
 }
