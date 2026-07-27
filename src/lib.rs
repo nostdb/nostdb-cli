@@ -24,6 +24,7 @@ pub mod command;
 pub mod exit;
 pub mod link;
 pub mod output;
+pub mod plan;
 pub mod query;
 pub mod sync;
 
@@ -98,6 +99,13 @@ pub enum Invocation {
         format: Format,
         /// Where to start looking for the active project.
         from: PathBuf,
+    },
+    /// `nostdb plan [PATH] [--format FORMAT]`
+    Plan {
+        /// Where to start looking for the active project.
+        from: PathBuf,
+        /// How to write the report.
+        format: Format,
     },
     /// `nostdb sync [PATH]`
     Sync {
@@ -232,6 +240,10 @@ impl Invocation {
                 Ok(Self::Export { from })
             }
             "link" => parse_link(&remainder),
+            "plan" => {
+                let (format, from) = parse_shared_options(&remainder, "plan")?;
+                Ok(Self::Plan { from, format })
+            }
             "sync" => match remainder.as_slice() {
                 [] => Ok(Self::Sync {
                     from: PathBuf::from("."),
@@ -261,6 +273,7 @@ impl Invocation {
                 format,
                 from,
             } => link::run(&action, &from, format, out, err),
+            Self::Plan { from, format } => plan::run(&from, format, out, err),
             Self::Sync { from } => sync::run(&from, out, err),
             Self::Query {
                 cypher,

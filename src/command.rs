@@ -43,6 +43,7 @@ Commands:
   export --nost [PATH]     Write the active project's graph as canonical .nost
   query [CYPHER]           Run one statement, or open the REPL when none is given
   link ACTION              Declare, remove, or report on links to other graphs
+  plan [PATH]              Report what a build would do, without doing any of it
   sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
   --version [--json]       Report this build and every contract version it supports
 
@@ -142,6 +143,30 @@ ever part of this database.
 
 `refresh` is not implemented. It advances a remote snapshot to a newer immutable
 commit, and a local link is read live and has no snapshot to advance.
+"
+        }
+        "plan" => {
+            "\
+nostdb plan [PATH] [--format FORMAT] [--project PATH]
+
+Reports what a build would do, and does none of it. Walks the project's tree,
+names the language of every file, and reports which an analyzer covers, which are
+unsupported, and what AI enrichment would cost.
+
+No AI action begins before a plan exists. That is why this is a command rather
+than build output: the estimate is what a budget check runs against, and it is
+shown before anything is spent.
+
+Every file the scan reaches is accounted for. A file that is not analyzed appears
+under the reason it was excluded — ignored, sensitive, unclassified, too large,
+binary, a symlink that was not followed, or permission denied.
+
+Token counts are a band rather than a number, because they are estimated from
+byte counts rather than tokenized. A budget check compares the top of the band, so
+a run that could exceed a hard limit never starts.
+
+Exits 8 when the estimated run would cross a configured token limit. Planning
+succeeded in that case; it is the plan that says the build cannot proceed.
 "
         }
         "version" | "--version" => {

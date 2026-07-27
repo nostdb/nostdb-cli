@@ -1332,3 +1332,156 @@ fn link_add_reports_json_when_asked_and_keeps_notes_off_stdout() {
     assert_eq!(document["nost_updated"], false);
     assert!(document["database_generation"].as_u64().unwrap() >= 2);
 }
+
+#[test]
+fn plan_reports_what_a_build_would_do_and_accounts_for_every_file() {
+    let dir = TempDir::new("plan");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join(".gitignore"), "*.log\n").unwrap();
+    fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
+    fs::write(dir.join("app.py"), "def main(): pass\n").unwrap();
+    fs::write(dir.join("debug.log"), "noise\n").unwrap();
+    fs::write(dir.join(".env"), "SECRET=1\n").unwrap();
+
+    let result = nostdb(["plan", "--format", "json", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    let document: serde_json::Value = serde_json::from_str(&result.out).unwrap();
+
+    assert_eq!(document["plan_version"], 1);
+    assert_eq!(document["scanned_files"], 2, "{}", result.out);
+    assert_eq!(
+        document["unsupported_files"], 2,
+        "no analyzer is registered yet, so both are unsupported"
+    );
+    assert_eq!(
+        document["structural_files"], 0,
+        "a count this build cannot honestly report is zero, not omitted"
+    );
+    assert_eq!(document["semantic_candidates"], 2);
+    assert_eq!(document["semantic_cache_hits"], 0);
+
+    let reasons: Vec<&str> = document["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["reason"].as_str().unwrap())
+        .collect();
+    assert!(reasons.contains(&"ignored"), "{reasons:?}");
+    assert!(reasons.contains(&"sensitive"), "{reasons:?}");
+}
+
+#[test]
+fn plan_never_mistakes_a_local_tree_for_a_commit() {
+    let dir = TempDir::new("plan-revision");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
+
+    let first = nostdb(["plan", "--format", "json", "--project", &root]);
+    let first: serde_json::Value = serde_json::from_str(&first.out).unwrap();
+    let revision = first["source_revision"].as_str().unwrap().to_owned();
+    assert!(revision.starts_with("tree:"), "{revision}");
+
+    // Unchanged source, unchanged revision. That is what an incremental rebuild reads.
+    let again = nostdb(["plan", "--format", "json", "--project", &root]);
+    let again: serde_json::Value = serde_json::from_str(&again.out).unwrap();
+    assert_eq!(again["source_revision"], revision.as_str());
+
+    fs::write(dir.join("main.rs"), "fn main() { let x = 1; }\n").unwrap();
+    let changed = nostdb(["plan", "--format", "json", "--project", &root]);
+    let changed: serde_json::Value = serde_json::from_str(&changed.out).unwrap();
+    assert_ne!(changed["source_revision"], revision.as_str());
+}
+
+#[test]
+fn plan_with_ai_off_spends_nothing_and_says_so_on_stderr() {
+    let dir = TempDir::new("plan-ai-off");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(
+        dir.join(".nostdb/settings.json"),
+        "{\"settings_version\": 1, \"analysis\": {\"ai_mode\": \"off\"}}",
+    )
+    .unwrap();
+    fs::write(dir.join("app.py"), "def main(): pass\n").unwrap();
+
+    let result = nostdb(["plan", "--format", "json", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    let document: serde_json::Value = serde_json::from_str(&result.out).unwrap();
+    assert_eq!(
+        document["semantic_candidates"], 1,
+        "what could be enriched is a fact about the source"
+    );
+    assert_eq!(document["estimated_input_tokens"]["high"], 0);
+    assert!(result.err.contains("ai_mode is off"), "{}", result.err);
+}
+
+#[test]
+fn plan_exits_eight_when_the_estimate_would_cross_a_configured_limit() {
+    // Planning succeeded. It is the plan that says the build cannot proceed, and it says
+    // so before anything is spent, which is the whole reason the command exists.
+    let dir = TempDir::new("plan-over-budget");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(
+        dir.join(".nostdb/settings.json"),
+        "{\"settings_version\": 1, \"analysis\": {\"max_input_tokens\": 10}}",
+    )
+    .unwrap();
+    fs::write(dir.join("app.py"), "def main(): pass\n".repeat(200)).unwrap();
+
+    let result = nostdb(["plan", "--project", &root]);
+    assert_eq!(result.class, ExitClass::AiBudget, "{}", result.err);
+    assert!(
+        result.out.contains("tokens"),
+        "the plan is still reported: {}",
+        result.out
+    );
+    assert!(result.err.contains("max_input_tokens"), "{}", result.err);
+}
+
+#[test]
+fn plan_writes_the_report_to_stdout_and_every_note_to_stderr() {
+    let dir = TempDir::new("plan-streams");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("app.py"), "def main(): pass\n").unwrap();
+
+    let result = nostdb(["plan", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    assert!(result.out.contains("revision"), "{}", result.out);
+    assert!(result.out.contains("python"), "{}", result.out);
+    // No limit is configured, so the contract requires asking before enrichment. The note
+    // saying so is commentary and must not reach the data stream.
+    assert!(result.err.contains("no token limit"), "{}", result.err);
+    assert!(!result.out.contains("note:"), "{}", result.out);
+}
+
+#[test]
+fn plan_says_why_everything_is_unsupported_rather_than_leaving_a_reader_to_guess() {
+    // "0 covered, 48 unsupported" reads as a strange project unless the report says the
+    // build is what has no analyzer.
+    let dir = TempDir::new("plan-no-analyzer");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
+
+    let result = nostdb(["plan", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    assert!(
+        result.err.contains("no deterministic analyzer"),
+        "{}",
+        result.err
+    );
+}
+
+#[test]
+fn plan_outside_a_project_is_a_usage_mistake() {
+    let dir = TempDir::new("plan-unconfigured");
+    let root = dir.path().to_string_lossy().into_owned();
+    let result = nostdb(["plan", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Usage);
+    assert!(result.out.is_empty(), "{}", result.out);
+    assert!(result.err.contains("nostdb init"), "{}", result.err);
+}
