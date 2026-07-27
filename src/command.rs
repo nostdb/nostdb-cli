@@ -44,6 +44,7 @@ Commands:
   query [CYPHER]           Run one statement, or open the REPL when none is given
   link ACTION              Declare, remove, or report on links to other graphs
   plan [PATH]              Report what a build would do, without doing any of it
+  build [PATH]             Analyze the project's source and commit what it found
   sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
   --version [--json]       Report this build and every contract version it supports
 
@@ -143,6 +144,33 @@ ever part of this database.
 
 `refresh` is not implemented. It advances a remote snapshot to a newer immutable
 commit, and a local link is read live and has no snapshot to advance.
+"
+        }
+        "build" => {
+            "\
+nostdb build [PATH] [--format FORMAT] [--project PATH]
+
+Analyzes the project's source and commits the structural facts it found: files,
+the items they declare, what contains what, and which calls resolve.
+
+Structural extraction spends no external AI tokens, so this cannot be refused by
+a budget. Optional AI enrichment is a separate step; `nostdb plan` is where its
+cost is shown.
+
+A rebuild replaces only this analyzer's own contributions for the files it read.
+Anything a person contributed to the same record survives, and a record the
+source no longer declares is removed.
+
+A record keeps its identifier across a rebuild as long as its qualified name is
+unchanged, so moving a function down a file costs nothing. Renaming one retires
+the old record and creates a new one, because a renamed function is not the same
+function to anything that referred to it by name.
+
+A call whose name matches nothing in the project is counted as unresolved rather
+than given a placeholder record. This build reads syntax without resolving names,
+so it cannot tell a missing symbol from one in a dependency it never saw.
+
+A failed build preserves the last valid generation.
 "
         }
         "plan" => {

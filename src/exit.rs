@@ -102,6 +102,9 @@ impl ExitClass {
             | ProjectError::Baseline { .. }
             | ProjectError::Nost { .. }
             | ProjectError::Link { .. }
+            // A change set the graph would not accept is a validation failure: the input
+            // was well formed and the result would have broken an invariant.
+            | ProjectError::Build { .. }
             | ProjectError::Decode(_) => Self::Validation,
             // The two representations disagree and the command refused to pick one, which
             // is the same class `sync` reports for a conflict it will not resolve.

@@ -24,12 +24,15 @@ fn global_settings_path() -> Option<PathBuf> {
 
 /// The analyzers this build ships.
 ///
+/// Shared with `build`, deliberately. A language `plan` calls unsupported and `build`
+/// analyzes would make the two disagree about the same file.
+///
 /// The Engine owns the list. Falling back to an empty registry rather than failing is
 /// deliberate: the only way `builtin_registry` can refuse is if two analyzers declared the
 /// same language, which is a defect in this build and not something a user did. Reporting
 /// every language as unsupported is then wrong but harmless, where refusing to plan at all
 /// would block a command that spends nothing.
-fn registry() -> CapabilityRegistry {
+pub fn registry() -> CapabilityRegistry {
     nostdb_core::analyze::builtin_registry().unwrap_or_else(|_| CapabilityRegistry::new())
 }
 

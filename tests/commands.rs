@@ -1526,3 +1526,131 @@ fn plan_outside_a_project_is_a_usage_mistake() {
     assert!(result.out.is_empty(), "{}", result.out);
     assert!(result.err.contains("nostdb init"), "{}", result.err);
 }
+
+#[test]
+fn build_commits_the_facts_and_a_query_can_then_find_them() {
+    // The pipeline end to end: scan, analyze, commit, query. Nothing in this test knows
+    // how any of those work, which is the point.
+    let dir = TempDir::new("build");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/main.rs"),
+        "fn main() { helper(); }\nfn helper() {}\nstruct Config { port: u32 }\n",
+    )
+    .unwrap();
+
+    let built = nostdb(["build", "--format", "json", "--project", &root]);
+    assert_eq!(built.class, ExitClass::Success, "{}", built.err);
+    let document: serde_json::Value = serde_json::from_str(&built.out).unwrap();
+    assert_eq!(document["analyzed_files"], 1);
+    assert_eq!(document["references"]["resolved"], 1);
+    assert_eq!(document["coverage"]["structural"], "complete");
+    assert_eq!(
+        document["coverage"]["semantic"], "skipped",
+        "a structural build runs no AI, and says so rather than implying it"
+    );
+    assert!(document["records"]["nodes_created"].as_u64().unwrap() >= 4);
+
+    let queried = nostdb([
+        "query",
+        "MATCH (f:Function) RETURN f.name ORDER BY f.name",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(queried.class, ExitClass::Success, "{}", queried.err);
+    let result: serde_json::Value = serde_json::from_str(&queried.out).unwrap();
+    assert_eq!(result["rows"][0][0], "helper");
+    assert_eq!(result["rows"][1][0], "main");
+
+    let calls = nostdb([
+        "query",
+        "MATCH (a:Function)-[:CALLS]->(b:Function) RETURN a.name, b.name",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    let result: serde_json::Value = serde_json::from_str(&calls.out).unwrap();
+    assert_eq!(result["rows"][0][0], "main");
+    assert_eq!(result["rows"][0][1], "helper");
+}
+
+#[test]
+fn a_rebuild_removes_what_the_source_no_longer_declares() {
+    let dir = TempDir::new("build-rebuild");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("lib.rs"), "fn kept() {}\nfn removed() {}\n").unwrap();
+    nostdb(["build", "--project", &root]);
+
+    fs::write(dir.join("lib.rs"), "fn kept() {}\n").unwrap();
+    let rebuilt = nostdb(["build", "--format", "json", "--project", &root]);
+    assert_eq!(rebuilt.class, ExitClass::Success, "{}", rebuilt.err);
+
+    let queried = nostdb([
+        "query",
+        "MATCH (f:Function) RETURN f.name",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    let result: serde_json::Value = serde_json::from_str(&queried.out).unwrap();
+    assert_eq!(result["summary"]["rows"], 1);
+    assert_eq!(result["rows"][0][0], "kept");
+}
+
+#[test]
+fn a_project_with_nothing_to_analyze_succeeds_and_says_so_on_stderr() {
+    // Exiting non-zero would break a pipeline that runs `build` before knowing what a
+    // repository contains.
+    let dir = TempDir::new("build-nothing");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("notes.txt"), "nothing here\n").unwrap();
+
+    let built = nostdb(["build", "--project", &root]);
+    assert_eq!(built.class, ExitClass::Success, "{}", built.err);
+    assert!(
+        built.err.contains("no file has a language"),
+        "{}",
+        built.err
+    );
+    assert!(built.out.contains("0 files"), "{}", built.out);
+}
+
+#[test]
+fn build_outside_a_project_is_a_usage_mistake_and_writes_nothing_to_stdout() {
+    let dir = TempDir::new("build-unconfigured");
+    let root = dir.path().to_string_lossy().into_owned();
+    let built = nostdb(["build", "--project", &root]);
+    assert_eq!(built.class, ExitClass::Usage);
+    assert!(built.out.is_empty(), "{}", built.out);
+    assert!(built.err.contains("nostdb init"), "{}", built.err);
+}
+
+#[test]
+fn a_build_and_a_plan_agree_about_which_files_they_cover() {
+    // They share one registry. A language `plan` calls unsupported and `build` analyzes
+    // would make the two disagree about the same file.
+    let dir = TempDir::new("build-plan-agree");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+    fs::write(dir.join("b.py"), "def b(): pass\n").unwrap();
+
+    let planned = nostdb(["plan", "--format", "json", "--project", &root]);
+    let planned: serde_json::Value = serde_json::from_str(&planned.out).unwrap();
+    let built = nostdb(["build", "--format", "json", "--project", &root]);
+    let built: serde_json::Value = serde_json::from_str(&built.out).unwrap();
+
+    assert_eq!(planned["structural_files"], built["analyzed_files"]);
+    assert_eq!(
+        planned["source_revision"], built["source_revision"],
+        "the same tree is the same snapshot to both"
+    );
+}
