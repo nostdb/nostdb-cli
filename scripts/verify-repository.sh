@@ -114,7 +114,10 @@ if [ -f Cargo.toml ]; then
   cargo fmt --check
   cargo check --all-targets --all-features
   cargo clippy --all-targets --all-features -- -D warnings
-  cargo test --all-targets --all-features
+  # The daemon round trip binds this user's real endpoint, so it is opt-in. It declines when a
+  # daemon is already running rather than stopping one it did not start, which is what makes it
+  # safe to switch on here and keeps a local run checking the same invariants as CI.
+  NOSTDB_DAEMON_TEST=1 cargo test --all-targets --all-features
 fi
 
 echo "nostdb-cli verification passed"

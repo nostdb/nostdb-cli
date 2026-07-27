@@ -2003,3 +2003,89 @@ fn the_catalog_refuses_a_name_that_breaks_the_contract() {
         "a refused add must not create a catalog"
     );
 }
+
+/// A whole round trip: start a daemon, register a name, query it, stop the daemon.
+///
+/// This is the only test that exercises the daemon route end to end from the command surface, and
+/// it is the one that proves `--database @name` reaches a real database rather than that the
+/// argument parses.
+///
+/// It is skipped unless `NOSTDB_DAEMON_TEST` is set, because it binds this user's real endpoint at
+/// `~/.nostdb/run/nostdb.sock` and would fight a daemon a developer is already running. The
+/// workspace verifier sets it.
+#[test]
+fn a_named_database_is_queried_through_the_daemon() {
+    if std::env::var_os("NOSTDB_DAEMON_TEST").is_none() {
+        println!("daemon round trip: skipped, NOSTDB_DAEMON_TEST is unset");
+        return;
+    }
+
+    // This binds the user's real endpoint, and it stops the daemon when it is done. Stopping one
+    // this test did not start would kill a daemon a developer is using, so it declines instead.
+    if nostdb_server::is_running().unwrap_or(false) {
+        println!(
+            "daemon round trip: skipped, a daemon is already running and this test would stop it"
+        );
+        return;
+    }
+
+    use nostdb_cli::client::Client;
+    use nostdb_cli::exit::ExitClass;
+
+    let directory = std::env::temp_dir().join(format!("nostdb-cli-daemon-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("scratch");
+    let database = directory.join("root.nostdb");
+    let _ = std::fs::remove_file(&database);
+    nostdb_core::storage::Database::create(&database).expect("created");
+
+    // Register the name in this user's real catalog, and take it out again at the end.
+    let catalog_path = nostdb_server::catalog::Catalog::default_path().expect("catalog path");
+    let name = format!("clitest{}", std::process::id());
+    let mut catalog = nostdb_server::catalog::Catalog::load(&catalog_path).expect("loaded");
+    catalog.insert(&name, &database).expect("registered");
+    catalog.store(&catalog_path).expect("stored");
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    let started = nostdb_cli::client::start_daemon(
+        std::path::Path::new(env!("CARGO_BIN_EXE_nostdb")),
+        std::time::Duration::from_secs(10),
+        &mut err,
+    );
+    assert!(
+        started.is_ok(),
+        "{started:?} {}",
+        String::from_utf8_lossy(&err)
+    );
+
+    let class = nostdb_cli::query::named(
+        &name,
+        "MATCH (n) RETURN count(n) AS total",
+        nostdb_cli::output::Format::Json,
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(
+        class,
+        ExitClass::Success,
+        "{}",
+        String::from_utf8_lossy(&err)
+    );
+
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&out).expect("the daemon route emits the envelope as JSON");
+    assert!(
+        envelope["result_version"].is_number(),
+        "the Engine's envelope must arrive intact: {envelope}"
+    );
+    assert_eq!(envelope["columns"], serde_json::json!(["total"]));
+
+    // Stopping is part of the round trip: a test that left a daemon running would poison the next.
+    let mut client = Client::connect().expect("connected");
+    client.shutdown().expect("stopped");
+
+    let mut catalog = nostdb_server::catalog::Catalog::load(&catalog_path).expect("loaded");
+    catalog.remove(&name);
+    catalog.store(&catalog_path).expect("cleaned up");
+}

@@ -23,6 +23,7 @@
 pub mod apply;
 pub mod build;
 pub mod catalog;
+pub mod client;
 pub mod command;
 pub mod exit;
 pub mod link;
@@ -150,6 +151,11 @@ pub enum Invocation {
         cypher: Option<String>,
         /// How to write the result.
         format: Format,
+        /// A catalog name, when the target is `@name` rather than a path.
+        ///
+        /// Present means the daemon runs the query; absent means Embedded Mode does, against a
+        /// path. The two are separate routes on purpose: a path never needs a daemon.
+        database: Option<String>,
         /// Where to start looking for the active project.
         from: PathBuf,
     },
@@ -357,10 +363,22 @@ impl Invocation {
             Self::Query {
                 cypher,
                 format,
+                database,
                 from,
-            } => match cypher {
-                Some(text) => query::immediate(&from, &text, format, out, err),
-                None => {
+            } => match (database, cypher) {
+                // A named target goes through the daemon; a path never does. Keeping the two
+                // routes apart is the product contract's Embedded Mode rule, not an optimisation:
+                // a path-based command must work with no daemon running.
+                (Some(name), Some(text)) => query::named(&name, &text, format, out, err),
+                (Some(_), None) => {
+                    let _ = writeln!(
+                        err,
+                        "the REPL runs against a project path; `--database @name` needs a statement"
+                    );
+                    ExitClass::Usage
+                }
+                (None, Some(text)) => query::immediate(&from, &text, format, out, err),
+                (None, None) => {
                     let stdin = std::io::stdin();
                     let mut input = stdin.lock();
                     query::repl(&from, format, &mut input, out, err)
@@ -439,15 +457,45 @@ fn parse_shared_options(
 /// The statement is positional and optional; omitting it opens the REPL. Options may
 /// appear before or after it, because a caller reaching for `--format` after typing a
 /// long statement should not have to move it.
+/// Reads `@name` into the bare catalog name the protocol carries.
+///
+/// The sigil belongs to the command line. `catalog_version` section 3.2 keeps it out of the name
+/// itself, and `server_protocol_version` section 5.1 requires the bare name on the wire, so this is
+/// the one place that strips it.
+fn named_database(value: &str) -> Result<String, UsageError> {
+    let Some(name) = value.strip_prefix('@') else {
+        return Err(usage(format!(
+            "`--database` takes a catalog name written `@{value}`; a path is the default target and needs no flag"
+        )));
+    };
+    if name.is_empty() {
+        return Err(usage("`--database` needs a name after the `@`".to_owned()));
+    }
+    Ok(name.to_owned())
+}
+
 fn parse_query(remainder: &[&str]) -> Result<Invocation, UsageError> {
     let mut cypher: Option<String> = None;
     let mut format = Format::default();
     let mut from = PathBuf::from(".");
+    let mut database: Option<String> = None;
     let mut index = 0;
 
     while index < remainder.len() {
         let argument = remainder[index];
         match argument {
+            "--database" => {
+                let Some(value) = remainder.get(index + 1) else {
+                    return Err(usage("`--database` needs a value".to_owned()));
+                };
+                database = Some(named_database(value)?);
+                index += 2;
+            }
+            other if other.starts_with("--database=") => {
+                let (_, value) = other.split_once('=').unwrap_or((other, ""));
+                database = Some(named_database(value)?);
+                index += 1;
+            }
             "--format" | "--project" => {
                 let Some(value) = remainder.get(index + 1) else {
                     return Err(usage(format!("`{argument}` needs a value")));
@@ -496,6 +544,7 @@ fn parse_query(remainder: &[&str]) -> Result<Invocation, UsageError> {
     Ok(Invocation::Query {
         cypher,
         format,
+        database,
         from,
     })
 }

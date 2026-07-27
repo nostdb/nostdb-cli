@@ -41,7 +41,8 @@ Commands:
   check TARGET             Validate a .nost or .nostdb file
   convert INPUT OUTPUT     Convert between .nost and .nostdb, in either direction
   export --nost [PATH]     Write the active project's graph as canonical .nost
-  query [CYPHER]           Run one statement, or open the REPL when none is given
+  query [CYPHER] [--database @NAME]
+                           Run one statement, or open the REPL when none is given
   link ACTION              Declare, remove, or report on links to other graphs
   plan [PATH]              Report what a build would do, without doing any of it
   build [PATH] [--rebuild] Analyze the project's source and commit what it found

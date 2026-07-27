@@ -435,6 +435,67 @@ pub fn has_errors(found: &[nostdb_core::diagnostic::Diagnostic]) -> bool {
         .any(|diagnostic| diagnostic.severity == Severity::Error)
 }
 
+/// Runs one statement against a named database, through the daemon.
+///
+/// This is the only route that needs a running daemon, and it is separate from [`immediate`] on
+/// purpose: the product contract makes Embedded Mode the default, so a path-based query must never
+/// acquire a dependency on a local service.
+///
+/// The envelope is the Engine's, forwarded by the daemon and rendered here by the same code that
+/// renders an embedded one. Nothing about the output tells a caller which route produced it, which
+/// is the point.
+pub fn named(
+    name: &str,
+    statement: &str,
+    format: Format,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitClass {
+    let mut client = match crate::client::Client::connect() {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = writeln!(err, "{error}");
+            return error.class();
+        }
+    };
+    if let Err(error) = client.open_session(name) {
+        let _ = writeln!(err, "{error}");
+        return error.class();
+    }
+    match client.query(statement) {
+        Err(error) => {
+            let _ = writeln!(err, "{error}");
+            error.class()
+        }
+        Ok(envelope) => {
+            // The daemon forwarded the Engine's envelope as JSON, and `output::write` renders a
+            // `ResultEnvelope` rather than a JSON document. Rebuilding one here would be a second
+            // reader of a published shape, and rendering a table straight from the JSON would be a
+            // second renderer of it: both are the duplication the root contract forbids, and both
+            // would drift on the first change to the envelope.
+            //
+            // So JSON passes through verbatim, which is exactly right, and every other format is
+            // refused by name. The real fix is making the envelope readable back in `nostdb-core`,
+            // which is recorded in the root progress file as what this needs.
+            if format == Format::Json {
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string_pretty(&envelope)
+                        .unwrap_or_else(|_| envelope.to_string())
+                );
+                return ExitClass::Success;
+            }
+            let _ = writeln!(
+                err,
+                "`--database @name` renders `json` only; `{}` needs the envelope read back, which nostdb-core does not expose yet",
+                format.as_str()
+            );
+            ExitClass::Usage
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

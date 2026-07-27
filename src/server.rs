@@ -2,9 +2,9 @@
 //!
 //! The daemon is `nostdb-server`. This module drives it and implements none of it.
 //!
-//! `run` and `status` work. `start` and `stop` are refused by name: `start` needs to spawn a
-//! detached process and wait for the endpoint to appear, and `stop` needs a protocol client to send
-//! `shutdown`. Refusing them says so, rather than a stub that appears to succeed.
+//! `start` spawns this binary as `server run` and waits for the endpoint to appear rather than
+//! assuming it did. `stop` asks the daemon over the protocol. `run` stays in the foreground, which
+//! is what a service manager and a debugging session both want.
 //!
 //! # Why `status` asks the lock rather than the socket
 //!
@@ -102,22 +102,51 @@ pub fn execute(action: Action, out: &mut dyn Write, err: &mut dyn Write) -> Exit
             }
         },
 
-        Action::Start | Action::Stop => {
-            // Not implemented in this increment, and refused by name rather than pretending.
-            // `start` needs to spawn a detached process and wait for the endpoint to appear, and
-            // `stop` needs a protocol client to send `shutdown`; both are recorded in the root
-            // progress file as what remains.
-            let _ = writeln!(
-                err,
-                "nostdb server {} is not implemented yet; use `nostdb server run` to run the daemon in the foreground",
-                if matches!(action, Action::Start) {
-                    "start"
-                } else {
-                    "stop"
+        Action::Start => {
+            let binary = match std::env::current_exe() {
+                Ok(binary) => binary,
+                Err(error) => {
+                    let _ = writeln!(
+                        err,
+                        "cannot locate this binary to start the daemon: {error}"
+                    );
+                    return ExitClass::Io;
                 }
-            );
-            ExitClass::Usage
+            };
+            match crate::client::start_daemon(&binary, std::time::Duration::from_secs(10), err) {
+                Ok(address) => {
+                    let _ = writeln!(out, "listening on {}", address.display());
+                    ExitClass::Success
+                }
+                Err(message) => {
+                    let _ = writeln!(err, "{message}");
+                    ExitClass::Io
+                }
+            }
         }
+
+        Action::Stop => match crate::client::Client::connect() {
+            Ok(mut client) => match client.shutdown() {
+                Ok(()) => {
+                    let _ = writeln!(out, "stopped");
+                    ExitClass::Success
+                }
+                Err(error) => {
+                    let _ = writeln!(err, "{error}");
+                    error.class()
+                }
+            },
+            // Stopping something that is not running is not a failure of the request: there is
+            // nothing left to do, which is what the caller wanted.
+            Err(crate::client::ClientError::NotRunning(_)) => {
+                let _ = writeln!(out, "not running");
+                ExitClass::Success
+            }
+            Err(error) => {
+                let _ = writeln!(err, "{error}");
+                error.class()
+            }
+        },
     }
 }
 
