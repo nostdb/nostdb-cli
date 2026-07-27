@@ -42,7 +42,7 @@ Commands:
   convert INPUT OUTPUT     Convert between .nost and .nostdb, in either direction
   export --nost [PATH]     Write the active project's graph as canonical .nost
   query [CYPHER]           Run one statement, or open the REPL when none is given
-  link list|check          Report every declared link and what became of it
+  link ACTION              Declare, remove, or report on links to other graphs
   sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
   --version [--json]       Report this build and every contract version it supports
 
@@ -113,6 +113,35 @@ requiring it keeps a later one from silently changing what a bare export means.
 
 Reports a warning when database.nost is false, because the file is written but
 nothing will keep it current.
+"
+        }
+        "link" => {
+            "\
+nostdb link list [--format FORMAT] [--project PATH]
+nostdb link check [--format FORMAT] [--project PATH]
+nostdb link add SOURCE [as ALIAS] [--format FORMAT] [--project PATH]
+nostdb link remove SOURCE [--format FORMAT] [--project PATH]
+
+  list      reports every declared link and what became of it
+  check     reports the same, and fails when any link is unreachable
+  add       declares a link and mirrors it into the settings
+  remove    removes the declaration and its settings entry
+
+SOURCE is the canonical locator, and it is the link's identity: moving a target
+means relinking it. The alias is written the way the language writes it, `as
+NAME`, and it is optional. It is stored in the graph and never in the settings,
+because an alias in a machine-local file would make one link mean two different
+things on two checkouts.
+
+`add` does not require the target to be reachable. Whether a source resolves is
+a separate question from whether it is declared, and `check` is the command that
+asks it.
+
+`remove` removes a declaration, never data. Nothing reached through a link was
+ever part of this database.
+
+`refresh` is not implemented. It advances a remote snapshot to a newer immutable
+commit, and a local link is read live and has no snapshot to advance.
 "
         }
         "version" | "--version" => {

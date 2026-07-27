@@ -86,7 +86,9 @@ impl ExitClass {
     ///
     /// A missing or already-configured project is a usage mistake. A refused document —
     /// settings, baseline, `.nost`, or a container whose payloads do not decode — is a
-    /// validation failure. Everything filesystem-shaped is I/O.
+    /// validation failure, and so is a link declaration the graph will not accept. A
+    /// `.nost` holding unadopted changes is a conflict. Everything filesystem-shaped is
+    /// I/O.
     ///
     /// One mapping rather than one per command. Three identical copies existed until
     /// adding two error variants made the compiler demand the same edit in each; they had
@@ -99,7 +101,11 @@ impl ExitClass {
             ProjectError::Settings { .. }
             | ProjectError::Baseline { .. }
             | ProjectError::Nost { .. }
+            | ProjectError::Link { .. }
             | ProjectError::Decode(_) => Self::Validation,
+            // The two representations disagree and the command refused to pick one, which
+            // is the same class `sync` reports for a conflict it will not resolve.
+            ProjectError::NostUnsynchronized { .. } => Self::Conflict,
             ProjectError::Io { .. } | ProjectError::Storage(_) => Self::Io,
         }
     }

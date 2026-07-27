@@ -731,17 +731,15 @@ fn a_remote_link_says_there_is_no_provider() {
 
 #[test]
 fn a_deferred_link_action_says_it_is_not_built_rather_than_unknown() {
-    // A caller who typed a real command deserves to be told it is not built yet.
-    for action in ["add", "remove", "refresh"] {
-        let result = nostdb(["link", action]);
-        assert_eq!(result.class, ExitClass::Usage, "{action}");
-        assert!(
-            result.err.contains("not implemented yet"),
-            "{action}: {}",
-            result.err
-        );
-        assert!(result.err.contains("journal"), "{action}: {}", result.err);
-    }
+    // A caller who typed a real command deserves to be told it is not built yet, and to
+    // be told the reason that is actually true. `refresh` is not waiting on the journal —
+    // `add` and `remove` use the journal now. It is waiting on there being a snapshot to
+    // advance, which a link read live from the local filesystem does not have.
+    let result = nostdb(["link", "refresh"]);
+    assert_eq!(result.class, ExitClass::Usage);
+    assert!(result.err.contains("not implemented yet"), "{}", result.err);
+    assert!(result.err.contains("snapshot"), "{}", result.err);
+    assert!(!result.err.contains("journal"), "{}", result.err);
 }
 
 #[test]
@@ -1138,4 +1136,199 @@ fn sync_outside_a_project_is_a_usage_error() {
     let synced = nostdb(["sync", dir.path().to_str().unwrap()]);
     assert_eq!(synced.class, ExitClass::Usage);
     assert!(synced.err.contains("nostdb init"), "{}", synced.err);
+}
+
+#[test]
+fn link_add_declares_a_link_and_link_list_reports_it() {
+    let dir = TempDir::new("link-add");
+    let root = dir.path().to_string_lossy().into_owned();
+    let target = dir.join("child");
+    fs::create_dir_all(&target).unwrap();
+    nostdb(["init", &root]);
+    nostdb(["init", target.to_str().unwrap()]);
+
+    let added = nostdb(["link", "add", "./child", "as", "child", "--project", &root]);
+    assert_eq!(added.class, ExitClass::Success, "{}", added.err);
+    assert!(added.out.contains("./child"), "{}", added.out);
+    assert!(added.out.contains("as child"), "{}", added.out);
+
+    let listed = nostdb(["link", "list", "--format", "json", "--project", &root]);
+    assert_eq!(listed.class, ExitClass::Success, "{}", listed.err);
+    let document: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+    assert_eq!(document["links"][0]["source"], "./child");
+    assert_eq!(document["links"][0]["alias"], "child");
+    assert_eq!(document["links"][0]["available"], true);
+
+    let checked = nostdb(["link", "check", "--project", &root]);
+    assert_eq!(checked.class, ExitClass::Success, "{}", checked.err);
+}
+
+#[test]
+fn link_add_does_not_require_the_target_to_be_reachable() {
+    // Whether a source resolves is a separate question from whether it is declared. A
+    // sibling that has not been cloned yet is exactly the case `check` exists to report.
+    let dir = TempDir::new("link-add-unreachable");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+
+    let added = nostdb(["link", "add", "./not-cloned-yet", "--project", &root]);
+    assert_eq!(added.class, ExitClass::Success, "{}", added.err);
+
+    let listed = nostdb(["link", "list", "--project", &root]);
+    assert_eq!(
+        listed.class,
+        ExitClass::Success,
+        "list reports; it does not judge"
+    );
+    let checked = nostdb(["link", "check", "--project", &root]);
+    assert_eq!(checked.class, ExitClass::Unavailable, "{}", checked.err);
+}
+
+#[test]
+fn link_add_writes_the_source_into_the_settings_and_the_alias_only_into_the_graph() {
+    let dir = TempDir::new("link-add-mirror");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    nostdb(["link", "add", "./child", "as", "child", "--project", &root]);
+
+    let settings = fs::read_to_string(dir.join(".nostdb/settings.json")).unwrap();
+    let document: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    assert_eq!(document["links"][0]["source"], "./child");
+    assert!(
+        document["links"][0].get("alias").is_none(),
+        "the settings contract rejects an entry carrying an alias: {settings}"
+    );
+}
+
+#[test]
+fn link_remove_removes_the_declaration_and_the_mirror() {
+    let dir = TempDir::new("link-remove");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    nostdb(["link", "add", "./child", "--project", &root]);
+
+    let removed = nostdb(["link", "remove", "./child", "--project", &root]);
+    assert_eq!(removed.class, ExitClass::Success, "{}", removed.err);
+
+    let listed = nostdb(["link", "list", "--format", "json", "--project", &root]);
+    let document: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+    assert_eq!(document["summary"]["declared"], 0);
+
+    let settings = fs::read_to_string(dir.join(".nostdb/settings.json")).unwrap();
+    let document: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    assert_eq!(document["links"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn a_refused_link_change_is_a_validation_failure_that_changed_nothing() {
+    let dir = TempDir::new("link-refused");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    nostdb(["link", "add", "./child", "as", "child", "--project", &root]);
+    let before = fs::read(dir.join(".nostdb/root.nostdb")).unwrap();
+
+    for arguments in [
+        vec!["link", "add", "./child", "--project", &root],
+        vec!["link", "add", "./other", "as", "child", "--project", &root],
+        vec!["link", "remove", "./nothing", "--project", &root],
+    ] {
+        let owned: Vec<String> = arguments.iter().map(|a| (*a).to_owned()).collect();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let class = run(&owned, &mut out, &mut err);
+        assert_eq!(class, ExitClass::Validation, "{arguments:?}");
+        assert!(out.is_empty(), "{arguments:?} wrote to stdout");
+        assert!(!err.is_empty(), "{arguments:?} explained nothing");
+    }
+
+    assert_eq!(
+        fs::read(dir.join(".nostdb/root.nostdb")).unwrap(),
+        before,
+        "a refused change preserves the last valid generation byte for byte"
+    );
+}
+
+#[test]
+fn a_link_change_refuses_rather_than_overwriting_a_hand_edited_nost() {
+    let dir = TempDir::new("link-unsynchronized");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(
+        dir.join(".nostdb/settings.json"),
+        "{\"settings_version\": 1, \"database\": {\"nost\": true}}",
+    )
+    .unwrap();
+    assert_eq!(nostdb(["sync", &root]).class, ExitClass::Success);
+
+    let nost = dir.join(".nostdb/root.nost");
+    let edited = format!(
+        "{}\n// written by hand\n",
+        fs::read_to_string(&nost).unwrap()
+    );
+    fs::write(&nost, &edited).unwrap();
+
+    let result = nostdb(["link", "add", "./child", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Conflict, "{}", result.err);
+    assert!(result.out.is_empty(), "{}", result.out);
+    assert!(result.err.contains("nostdb sync"), "{}", result.err);
+    assert_eq!(
+        fs::read_to_string(&nost).unwrap(),
+        edited,
+        "the hand-written line survives the refusal"
+    );
+}
+
+#[test]
+fn a_link_change_keeps_a_materialized_nost_current_and_in_agreement() {
+    let dir = TempDir::new("link-materialized");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(
+        dir.join(".nostdb/settings.json"),
+        "{\"settings_version\": 1, \"database\": {\"nost\": true}}",
+    )
+    .unwrap();
+    assert_eq!(nostdb(["sync", &root]).class, ExitClass::Success);
+
+    let added = nostdb(["link", "add", "./child", "as", "child", "--project", &root]);
+    assert_eq!(added.class, ExitClass::Success, "{}", added.err);
+
+    let nost = fs::read_to_string(dir.join(".nostdb/root.nost")).unwrap();
+    assert!(nost.contains("@link \"./child\" as child"), "{nost}");
+
+    let synced = nostdb(["sync", &root]);
+    assert_eq!(
+        synced.class,
+        ExitClass::Success,
+        "the change must leave the two agreeing: {}",
+        synced.err
+    );
+    assert!(synced.out.contains("up to date"), "{}", synced.out);
+}
+
+#[test]
+fn link_add_reports_json_when_asked_and_keeps_notes_off_stdout() {
+    let dir = TempDir::new("link-json");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+
+    let added = nostdb([
+        "link",
+        "add",
+        "./child",
+        "as",
+        "child",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(added.class, ExitClass::Success, "{}", added.err);
+    let document: serde_json::Value = serde_json::from_str(&added.out).unwrap();
+    assert_eq!(document["action"], "added");
+    assert_eq!(document["source"], "./child");
+    assert_eq!(document["alias"], "child");
+    assert_eq!(document["settings_updated"], true);
+    assert_eq!(document["nost_updated"], false);
+    assert!(document["database_generation"].as_u64().unwrap() >= 2);
 }

@@ -90,7 +90,7 @@ pub enum Invocation {
         /// Where to start looking for the active project.
         from: PathBuf,
     },
-    /// `nostdb link list|check [--format FORMAT] [--project PATH]`
+    /// `nostdb link list|check|add|remove [OPERANDS] [--format FORMAT] [--project PATH]`
     Link {
         /// What to do.
         action: link::Action,
@@ -260,7 +260,7 @@ impl Invocation {
                 action,
                 format,
                 from,
-            } => link::run(action, &from, format, out, err),
+            } => link::run(&action, &from, format, out, err),
             Self::Sync { from } => sync::run(&from, out, err),
             Self::Query {
                 cypher,
@@ -280,30 +280,13 @@ impl Invocation {
 
 /// Parses `link`'s operands.
 ///
-/// A subcommand the product contract names and this build does not implement is refused
-/// by name, rather than falling through to "unknown". A caller who typed a real command
-/// deserves to be told it is not built yet, not that it does not exist.
+/// The action grammar lives in [`link::parse`], beside the actions themselves, so adding
+/// one does not mean editing two files. A subcommand the product contract names and this
+/// build does not implement is refused by name there, rather than falling through to
+/// "unknown": a caller who typed a real command deserves to be told it is not built yet,
+/// not that it does not exist.
 fn parse_link(remainder: &[&str]) -> Result<Invocation, UsageError> {
-    let Some((first, rest)) = remainder.split_first() else {
-        return Err(usage(format!(
-            "`link` needs an action: {:?}",
-            link::Action::IMPLEMENTED
-        )));
-    };
-    let Some(action) = link::Action::from_text(first) else {
-        if link::Action::DEFERRED.contains(first) {
-            return Err(usage(format!(
-                "`link {first}` is not implemented yet: it reconciles the declaration in \
-                 the database with its settings entry, which needs the multi-file journal \
-                 the settings contract requires"
-            )));
-        }
-        return Err(usage(format!(
-            "`{first}` is not a link action; expected one of {:?}",
-            link::Action::IMPLEMENTED
-        )));
-    };
-
+    let (action, rest) = link::parse(remainder).map_err(usage)?;
     let (format, from) = parse_shared_options(rest, "link")?;
     Ok(Invocation::Link {
         action,
