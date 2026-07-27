@@ -7,10 +7,15 @@
 //! check and cannot be refused by one. `nostdb plan` is where the cost of the *optional*
 //! enrichment that follows is shown, and that is a separate step this build does not run.
 //!
-//! A tree where every file matches the digest already recorded is not read at all.
-//! Anything less than that — one changed file, one deleted file — reads everything, because
-//! resolving references against a mixture of fresh and reused records lost edges and the
-//! reason is not yet understood. `--rebuild` reads everything unconditionally.
+//! A tree where every file matches the digest already recorded is not read at all. Anything
+//! less than that — one changed file, one deleted file — enters every file into the build,
+//! because resolving against a mixture of fresh and previously recorded facts lost edges and
+//! the reason is not yet understood.
+//!
+//! What keeps that affordable is the parse cache: a file whose bytes have not changed is not
+//! re-read or re-parsed, but it still enters the build, so the index references resolve
+//! against is complete. `--rebuild` distrusts the recorded facts; it does not distrust a
+//! parse of bytes that have not changed, because that is not a fact about the database.
 
 use crate::exit::ExitClass;
 use crate::output::Format;
@@ -33,6 +38,7 @@ fn as_json(report: &BuildReport) -> Value {
         "source_revision": report.revision,
         "analyzed_files": report.analyzed_files,
         "reused_files": report.reused_files,
+        "cached_parses": report.cached_parses,
         "records": {
             "nodes_created": summary.nodes_created,
             "nodes_updated": summary.nodes_updated,
@@ -59,8 +65,11 @@ fn as_table(report: &BuildReport, out: &mut dyn Write) {
     let _ = writeln!(out, "revision   {}", report.revision);
     let _ = writeln!(
         out,
-        "analyzed   {} files, {} reused, structural {}",
-        report.analyzed_files, report.reused_files, report.coverage.structural
+        "analyzed   {} files, {} from cache, {} reused, structural {}",
+        report.analyzed_files,
+        report.cached_parses,
+        report.reused_files,
+        report.coverage.structural
     );
     let _ = writeln!(
         out,

@@ -158,10 +158,14 @@ a budget. Optional AI enrichment is a separate step; `nostdb plan` is where its
 cost is shown.
 
 A tree where every file matches the digest already recorded is not read at all,
-and commits nothing. Anything less than that reads everything: resolving
-references against a mixture of freshly read and previously recorded facts turned
-out to lose edges, and until that is understood a build that reads one file reads
-them all. `--rebuild` reads everything unconditionally.
+and commits nothing. Anything less than that enters every file into the build:
+resolving references against a mixture of freshly read and previously recorded
+facts turned out to lose edges, and until that is understood a build that reads
+one file considers them all.
+
+A parse is cached, so a file whose bytes have not changed is not re-read or
+re-parsed even then. `--rebuild` distrusts the recorded facts; it does not
+distrust a parse of unchanged bytes, which is not a fact about the database.
 
 A rebuild replaces only this analyzer's own contributions for the files it read.
 Anything a person contributed to the same record survives, and a record the
