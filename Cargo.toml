@@ -46,7 +46,7 @@ missing_panics_doc = "deny"
 # from a malformed invocation to exit class 2 explicit rather than delegated.
 [dependencies]
 serde_json = "1"
-nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "386b76a85bd095e6d0c9a0dc34dd2636dce3feca" }
+nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "d9c16a94f6a4a24c14af25bb0cf43be9432e17ef" }
 
 [dev-dependencies]
 serde_json = "1"

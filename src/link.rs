@@ -8,7 +8,7 @@
 use crate::exit::ExitClass;
 use crate::output::Format;
 use nostdb_core::federation::{Federation, LinkStatus};
-use nostdb_core::project::{Project, ProjectError};
+use nostdb_core::project::Project;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,14 +38,6 @@ impl Action {
 
     /// Subcommands the product contract names and this build does not implement.
     pub const DEFERRED: [&'static str; 3] = ["add", "remove", "refresh"];
-}
-
-fn project_class(error: &ProjectError) -> ExitClass {
-    match error {
-        ProjectError::NotFound { .. } | ProjectError::AlreadyConfigured { .. } => ExitClass::Usage,
-        ProjectError::Settings { .. } | ProjectError::Decode(_) => ExitClass::Validation,
-        ProjectError::Io { .. } | ProjectError::Storage(_) => ExitClass::Io,
-    }
 }
 
 fn global_settings_path() -> Option<PathBuf> {
@@ -137,14 +129,14 @@ pub fn run(
         Ok(project) => project,
         Err(error) => {
             let _ = writeln!(err, "{error}");
-            return project_class(&error);
+            return ExitClass::for_project_error(&error);
         }
     };
     let federation = match project.resolve_links() {
         Ok(federation) => federation,
         Err(error) => {
             let _ = writeln!(err, "{error}");
-            return project_class(&error);
+            return ExitClass::for_project_error(&error);
         }
     };
 

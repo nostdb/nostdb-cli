@@ -25,6 +25,7 @@ pub mod exit;
 pub mod link;
 pub mod output;
 pub mod query;
+pub mod sync;
 
 pub use exit::ExitClass;
 pub use output::Format;
@@ -95,6 +96,11 @@ pub enum Invocation {
         action: link::Action,
         /// How to write the report.
         format: Format,
+        /// Where to start looking for the active project.
+        from: PathBuf,
+    },
+    /// `nostdb sync [PATH]`
+    Sync {
         /// Where to start looking for the active project.
         from: PathBuf,
     },
@@ -226,6 +232,15 @@ impl Invocation {
                 Ok(Self::Export { from })
             }
             "link" => parse_link(&remainder),
+            "sync" => match remainder.as_slice() {
+                [] => Ok(Self::Sync {
+                    from: PathBuf::from("."),
+                }),
+                [path] => Ok(Self::Sync {
+                    from: positional(path, "a project path")?,
+                }),
+                [_, extra, ..] => Err(usage(format!("`sync` takes one path, found `{extra}`"))),
+            },
             "query" => parse_query(&remainder),
             other if other.starts_with('-') => Err(usage(format!("unknown option `{other}`"))),
             other => Err(usage(format!("unknown command `{other}`"))),
@@ -246,6 +261,7 @@ impl Invocation {
                 format,
                 from,
             } => link::run(action, &from, format, out, err),
+            Self::Sync { from } => sync::run(&from, out, err),
             Self::Query {
                 cypher,
                 format,

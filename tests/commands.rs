@@ -925,3 +925,217 @@ fn a_write_naming_a_linked_record_is_refused_and_the_target_is_untouched() {
     let parsed: serde_json::Value = serde_json::from_str(&unchanged.out).unwrap();
     assert_eq!(parsed["rows"][0][0], "original");
 }
+
+// -- sync ------------------------------------------------------------------------
+
+/// A configured project with materialization on and one node in the database.
+fn materialized_project(label: &str) -> TempDir {
+    let dir = TempDir::new(label);
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+    fs::write(
+        dir.join(".nostdb/settings.json"),
+        "{\"settings_version\": 1, \"database\": {\"nost\": true}}",
+    )
+    .unwrap();
+    assert_eq!(
+        nostdb([
+            "query",
+            "CREATE (n:Function {name: \"seed\"})",
+            "--project",
+            &root
+        ])
+        .class,
+        ExitClass::Success
+    );
+    dir
+}
+
+#[test]
+fn sync_materializes_a_missing_file_then_reports_up_to_date() {
+    let dir = materialized_project("sync-materialize");
+    let root = dir.path().to_string_lossy().into_owned();
+
+    let first = nostdb(["sync", &root]);
+    assert_eq!(first.class, ExitClass::Success, "{}", first.err);
+    assert!(dir.join(".nostdb/root.nost").is_file());
+    assert!(
+        dir.join(".nostdb/sync.json").is_file(),
+        "a baseline is recorded"
+    );
+
+    let second = nostdb(["sync", &root]);
+    assert_eq!(second.class, ExitClass::Success);
+    assert!(second.out.contains("up to date"), "{}", second.out);
+}
+
+#[test]
+fn sync_adopts_an_edited_document() {
+    let dir = materialized_project("sync-adopt");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["sync", &root]).class, ExitClass::Success);
+
+    let nost = dir.join(".nostdb/root.nost");
+    let edited = format!(
+        "{}\nnode added: Function {{\n  name: \"added\",\n}}\n",
+        fs::read_to_string(&nost).unwrap()
+    );
+    fs::write(&nost, edited).unwrap();
+
+    let synced = nostdb(["sync", &root]);
+    assert_eq!(synced.class, ExitClass::Success, "{}", synced.err);
+    assert!(synced.out.contains("adopted"), "{}", synced.out);
+
+    let counted = nostdb([
+        "query",
+        "MATCH (n) RETURN n.name",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    let parsed: serde_json::Value = serde_json::from_str(&counted.out).unwrap();
+    assert_eq!(
+        parsed["summary"]["rows"], 2,
+        "the edit reached the database"
+    );
+}
+
+#[test]
+fn a_changed_database_leaves_the_document_stale_rather_than_regenerating_it() {
+    let dir = materialized_project("sync-stale");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["sync", &root]).class, ExitClass::Success);
+    let before = fs::read_to_string(dir.join(".nostdb/root.nost")).unwrap();
+
+    assert_eq!(
+        nostdb([
+            "query",
+            "CREATE (n:Function {name: \"only-in-database\"})",
+            "--project",
+            &root
+        ])
+        .class,
+        ExitClass::Success
+    );
+
+    let synced = nostdb(["sync", &root]);
+    assert_eq!(synced.class, ExitClass::Conflict);
+    assert!(synced.err.contains("NOST_SOURCE_STALE"), "{}", synced.err);
+    assert_eq!(
+        fs::read_to_string(dir.join(".nostdb/root.nost")).unwrap(),
+        before,
+        "a stale file may hold edits its author has not applied"
+    );
+}
+
+#[test]
+fn both_sides_changing_is_a_conflict_that_modifies_neither() {
+    let dir = materialized_project("sync-conflict");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["sync", &root]).class, ExitClass::Success);
+
+    assert_eq!(
+        nostdb([
+            "query",
+            "CREATE (n:Function {name: \"in-database\"})",
+            "--project",
+            &root
+        ])
+        .class,
+        ExitClass::Success
+    );
+    let nost = dir.join(".nostdb/root.nost");
+    let edited = format!(
+        "{}\nnode added: Function {{\n  name: \"in-file\",\n}}\n",
+        fs::read_to_string(&nost).unwrap()
+    );
+    fs::write(&nost, &edited).unwrap();
+    let database_before = fs::read(dir.join(".nostdb/root.nostdb")).unwrap();
+
+    let synced = nostdb(["sync", &root]);
+    assert_eq!(synced.class, ExitClass::Conflict);
+    assert!(synced.err.contains("SYNC_CONFLICT"), "{}", synced.err);
+    assert!(synced.err.contains("human decision"), "{}", synced.err);
+
+    assert_eq!(
+        fs::read_to_string(&nost).unwrap(),
+        edited,
+        "the file is untouched"
+    );
+    assert_eq!(
+        fs::read(dir.join(".nostdb/root.nostdb")).unwrap(),
+        database_before,
+        "and so is the database"
+    );
+}
+
+#[test]
+fn sync_declines_when_no_baseline_records_what_the_two_agreed_on() {
+    let dir = materialized_project("sync-no-baseline");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["sync", &root]).class, ExitClass::Success);
+    fs::remove_file(dir.join(".nostdb/sync.json")).unwrap();
+
+    let synced = nostdb(["sync", &root]);
+    assert_eq!(synced.class, ExitClass::Conflict);
+    assert!(synced.err.contains("last agreed on"), "{}", synced.err);
+    // And it says how to establish one, rather than only that it cannot proceed.
+    assert!(synced.err.contains("export --nost"), "{}", synced.err);
+    assert!(synced.err.contains("convert"), "{}", synced.err);
+}
+
+#[test]
+fn a_refused_document_leaves_the_database_exactly_as_it_was() {
+    let dir = materialized_project("sync-refused");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["sync", &root]).class, ExitClass::Success);
+    let before = fs::read(dir.join(".nostdb/root.nostdb")).unwrap();
+
+    fs::write(
+        dir.join(".nostdb/root.nost"),
+        "@nost 2\nnode a: L {\n  id: \"n_1\",\n}\n",
+    )
+    .unwrap();
+
+    let synced = nostdb(["sync", &root]);
+    assert_eq!(synced.class, ExitClass::Validation);
+    assert!(synced.err.contains("NOST_INVALID_ID"), "{}", synced.err);
+    assert_eq!(fs::read(dir.join(".nostdb/root.nostdb")).unwrap(), before);
+}
+
+#[test]
+fn sync_says_there_is_nothing_to_compare_when_materialization_is_off() {
+    let dir = TempDir::new("sync-off");
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+
+    let synced = nostdb(["sync", &root]);
+    assert_eq!(synced.class, ExitClass::Success, "{}", synced.err);
+    assert!(synced.err.contains("nothing to compare"), "{}", synced.err);
+    assert!(!dir.join(".nostdb/root.nost").exists());
+}
+
+#[test]
+fn export_records_a_baseline_so_sync_can_proceed_afterwards() {
+    let dir = materialized_project("sync-after-export");
+    let root = dir.path().to_string_lossy().into_owned();
+
+    assert_eq!(
+        nostdb(["export", "--nost", &root]).class,
+        ExitClass::Success
+    );
+    assert!(dir.join(".nostdb/sync.json").is_file());
+
+    let synced = nostdb(["sync", &root]);
+    assert_eq!(synced.class, ExitClass::Success, "{}", synced.err);
+    assert!(synced.out.contains("up to date"), "{}", synced.out);
+}
+
+#[test]
+fn sync_outside_a_project_is_a_usage_error() {
+    let dir = TempDir::new("sync-unconfigured");
+    let synced = nostdb(["sync", dir.path().to_str().unwrap()]);
+    assert_eq!(synced.class, ExitClass::Usage);
+    assert!(synced.err.contains("nostdb init"), "{}", synced.err);
+}

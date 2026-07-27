@@ -20,7 +20,7 @@ use nostdb_core::cypher::{Query, parse};
 use nostdb_core::diagnostic::Severity;
 use nostdb_core::execute::{LinkedSource, Parameters};
 use nostdb_core::federation::Federation;
-use nostdb_core::project::{Project, ProjectError};
+use nostdb_core::project::Project;
 use nostdb_core::result::ResultEnvelope;
 use nostdb_core::storage::Database;
 use nostdb_core::transaction::{Transaction, TransactionError};
@@ -47,14 +47,6 @@ fn transaction_class(error: &TransactionError) -> ExitClass {
         TransactionError::Storage(_) => ExitClass::Io,
         TransactionError::Decode(_) => ExitClass::Validation,
         TransactionError::Query(query) => query_class(query),
-    }
-}
-
-fn project_class(error: &ProjectError) -> ExitClass {
-    match error {
-        ProjectError::NotFound { .. } | ProjectError::AlreadyConfigured { .. } => ExitClass::Usage,
-        ProjectError::Settings { .. } | ProjectError::Decode(_) => ExitClass::Validation,
-        ProjectError::Io { .. } | ProjectError::Storage(_) => ExitClass::Io,
     }
 }
 
@@ -96,15 +88,15 @@ fn open(from: &Path, err: &mut dyn Write) -> Result<(Database, Federation), Exit
         .map(|home| Path::new(&home).join(".nostdb").join("settings.json"));
     let project = Project::discover(from, global.as_deref()).map_err(|error| {
         let _ = writeln!(err, "{error}");
-        project_class(&error)
+        ExitClass::for_project_error(&error)
     })?;
     let federation = project.resolve_links().map_err(|error| {
         let _ = writeln!(err, "{error}");
-        project_class(&error)
+        ExitClass::for_project_error(&error)
     })?;
     let database = project.open_database().map_err(|error| {
         let _ = writeln!(err, "{error}");
-        project_class(&error)
+        ExitClass::for_project_error(&error)
     })?;
     Ok((database, federation))
 }

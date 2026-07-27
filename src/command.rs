@@ -17,7 +17,7 @@ use nostdb_core::diagnostic::{Diagnostic, Severity};
 use nostdb_core::encoding::{Graph, commit_graph, read_graph};
 use nostdb_core::nost::validate::SUPPORTED_LANGUAGE_VERSIONS;
 use nostdb_core::nost::{ConversionError, format, from_graph, parse, to_graph, validate};
-use nostdb_core::project::{Project, ProjectError};
+use nostdb_core::project::Project;
 use nostdb_core::settings::SUPPORTED_VERSIONS as SUPPORTED_SETTINGS_VERSIONS;
 use nostdb_core::storage::Database;
 use std::io::Write;
@@ -43,6 +43,7 @@ Commands:
   export --nost [PATH]     Write the active project's graph as canonical .nost
   query [CYPHER]           Run one statement, or open the REPL when none is given
   link list|check          Report every declared link and what became of it
+  sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
   --version [--json]       Report this build and every contract version it supports
 
 Data is written to stdout and diagnostics to stderr, so a machine-readable mode
@@ -180,18 +181,6 @@ pub fn version(json: bool, out: &mut dyn Write) -> ExitClass {
     ExitClass::Success
 }
 
-/// The exit class a project failure reports.
-///
-/// A missing project is a usage mistake rather than a corrupt file, a refused settings
-/// document is a validation failure, and everything filesystem-shaped is I/O.
-fn project_class(error: &ProjectError) -> ExitClass {
-    match error {
-        ProjectError::NotFound { .. } | ProjectError::AlreadyConfigured { .. } => ExitClass::Usage,
-        ProjectError::Settings { .. } | ProjectError::Decode(_) => ExitClass::Validation,
-        ProjectError::Io { .. } | ProjectError::Storage(_) => ExitClass::Io,
-    }
-}
-
 /// `nostdb init [PATH]`
 pub fn init(path: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitClass {
     match Project::initialize(path) {
@@ -207,7 +196,7 @@ pub fn init(path: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitClass 
         }
         Err(error) => {
             let _ = writeln!(err, "{error}");
-            project_class(&error)
+            ExitClass::for_project_error(&error)
         }
     }
 }
@@ -484,7 +473,7 @@ pub fn export(from: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitClas
         Ok(project) => project,
         Err(error) => {
             let _ = writeln!(err, "{error}");
-            return project_class(&error);
+            return ExitClass::for_project_error(&error);
         }
     };
 
@@ -492,7 +481,7 @@ pub fn export(from: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitClas
         Ok(graph) => graph,
         Err(error) => {
             let _ = writeln!(err, "{error}");
-            return project_class(&error);
+            return ExitClass::for_project_error(&error);
         }
     };
 
@@ -501,10 +490,13 @@ pub fn export(from: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitClas
     let orphans = project.orphan_link_settings(&graph);
     let _ = report(&orphans, err);
 
+    // The Engine writes the file and records the baseline in one step. Writing the file
+    // here and the baseline separately would leave a window where the two disagree about
+    // whether they agree.
     let target = project.nost_path();
-    let text = format(&from_graph(&graph));
-    if let Err(class) = write_atomically(&target, &text, err) {
-        return class;
+    if let Err(error) = project.export_nost() {
+        let _ = writeln!(err, "{error}");
+        return ExitClass::for_project_error(&error);
     }
 
     if !project.settings().database.nost {

@@ -81,6 +81,28 @@ impl ExitClass {
             Self::Internal => "internal",
         }
     }
+
+    /// The class a project failure reports.
+    ///
+    /// A missing or already-configured project is a usage mistake. A refused document —
+    /// settings, baseline, `.nost`, or a container whose payloads do not decode — is a
+    /// validation failure. Everything filesystem-shaped is I/O.
+    ///
+    /// One mapping rather than one per command. Three identical copies existed until
+    /// adding two error variants made the compiler demand the same edit in each; they had
+    /// not yet drifted, and consolidating them is what keeps that true.
+    #[must_use]
+    pub const fn for_project_error(error: &nostdb_core::project::ProjectError) -> Self {
+        use nostdb_core::project::ProjectError;
+        match error {
+            ProjectError::NotFound { .. } | ProjectError::AlreadyConfigured { .. } => Self::Usage,
+            ProjectError::Settings { .. }
+            | ProjectError::Baseline { .. }
+            | ProjectError::Nost { .. }
+            | ProjectError::Decode(_) => Self::Validation,
+            ProjectError::Io { .. } | ProjectError::Storage(_) => Self::Io,
+        }
+    }
 }
 
 impl fmt::Display for ExitClass {

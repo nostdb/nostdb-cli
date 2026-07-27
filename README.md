@@ -45,6 +45,7 @@ nostdb convert INPUT OUTPUT
 nostdb export --nost [PATH]
 nostdb query [CYPHER] [--format FORMAT] [--project PATH]
 nostdb link list|check [--format FORMAT] [--project PATH]
+nostdb sync [PATH]
 nostdb --version [--json]
 ```
 
@@ -63,7 +64,12 @@ same and exits 5 when any is unreachable. `link add`, `link remove`, and `link r
 each reconcile a declaration with its settings entry, which needs the multi-file journal
 the settings contract requires, and are refused by name until that exists.
 
-`plan`, `build`, `apply`, `sync`, `catalog`, `server`, `plugin`, and
+`sync` compares the database and the canonical `.nost` against the baseline recorded
+when they last agreed, and acts only on the one outcome that permits a change. It exits 4
+when it declines: a stale file may hold edits its author has not applied, and a conflict
+is a human decision.
+
+`plan`, `build`, `apply`, `catalog`, `server`, `plugin`, and
 `view` are not implemented yet. See the implementation progress record in the root
 superproject for which increment owns each.
 
