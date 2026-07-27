@@ -43,10 +43,19 @@ nostdb init [PATH]
 nostdb check TARGET
 nostdb convert INPUT OUTPUT
 nostdb export --nost [PATH]
+nostdb query [CYPHER] [--format FORMAT] [--project PATH]
 nostdb --version [--json]
 ```
 
-`plan`, `build`, `apply`, `sync`, `query`, `link`, `catalog`, `server`, `plugin`, and
+`query` runs one statement, or opens a REPL when none is given. The REPL reads Cypher
+terminated by `;` across as many lines as needed and accepts `:help`, `:begin`,
+`:commit`, `:rollback`, `:database`, and `:quit`.
+
+Results are written as `table`, `json`, `jsonl`, or `csv`. Only `json` and `jsonl` carry
+the warnings; the other two write them to standard error, because a warning nobody sees
+is the same as no warning. The table is for a person and is explicitly not stable.
+
+`plan`, `build`, `apply`, `sync`, `link`, `catalog`, `server`, `plugin`, and
 `view` are not implemented yet. See the implementation progress record in the root
 superproject for which increment owns each.
 

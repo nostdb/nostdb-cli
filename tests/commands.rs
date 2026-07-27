@@ -446,3 +446,168 @@ fn a_refused_settings_document_is_a_validation_failure_naming_the_file() {
     assert!(result.err.contains("settings.json"), "{}", result.err);
     assert!(result.err.contains("alias"), "{}", result.err);
 }
+
+// -- query, the output formats, and the REPL -------------------------------------
+
+/// A configured project holding two Function nodes and one edge between them.
+fn seeded_project(label: &str) -> TempDir {
+    let dir = TempDir::new(label);
+    let root = dir.path().to_string_lossy().into_owned();
+    assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
+    let source = dir.join("seed.nost");
+    fs::write(&source, SAMPLE).unwrap();
+    assert_eq!(
+        nostdb([
+            "convert",
+            source.to_str().unwrap(),
+            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+        ])
+        .class,
+        ExitClass::Success
+    );
+    dir
+}
+
+#[test]
+fn query_reads_in_every_format_and_only_json_carries_the_warnings() {
+    let dir = seeded_project("query-formats");
+    let root = dir.path().to_string_lossy().into_owned();
+    let statement = "MATCH (n:Function) RETURN n.name ORDER BY n.name";
+
+    let json = nostdb(["query", statement, "--format", "json", "--project", &root]);
+    assert_eq!(json.class, ExitClass::Success, "{}", json.err);
+    let parsed: serde_json::Value = serde_json::from_str(&json.out).expect("one JSON document");
+    assert_eq!(parsed["result_version"], 1);
+    assert_eq!(parsed["summary"]["rows"], 2);
+    assert_eq!(parsed["rows"][0][0], "login");
+    // A read reports no write summary at all.
+    assert!(parsed["summary"].get("writes").is_none(), "{}", json.out);
+
+    let jsonl = nostdb(["query", statement, "--format", "jsonl", "--project", &root]);
+    assert_eq!(jsonl.class, ExitClass::Success);
+    let lines: Vec<&str> = jsonl.out.lines().collect();
+    assert_eq!(lines.len(), 4, "{}", jsonl.out);
+    for line in &lines {
+        serde_json::from_str::<serde_json::Value>(line).expect("every line is JSON");
+    }
+
+    let csv = nostdb(["query", statement, "--format", "csv", "--project", &root]);
+    assert_eq!(csv.class, ExitClass::Success);
+    assert_eq!(csv.out.lines().next(), Some("n.name"));
+    assert_eq!(csv.out.lines().nth(1), Some("login"));
+
+    let table = nostdb(["query", statement, "--format", "table", "--project", &root]);
+    assert_eq!(table.class, ExitClass::Success);
+    assert!(table.out.contains("2 rows"), "{}", table.out);
+}
+
+#[test]
+fn the_default_format_is_the_table() {
+    let dir = seeded_project("query-default-format");
+    let root = dir.path().to_string_lossy().into_owned();
+    let result = nostdb(["query", "MATCH (n) RETURN n.name", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    assert!(result.out.contains("row"), "{}", result.out);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&result.out).is_err(),
+        "the default must not be JSON"
+    );
+}
+
+#[test]
+fn a_write_reports_what_it_changed_and_the_change_survives() {
+    let dir = seeded_project("query-write");
+    let root = dir.path().to_string_lossy().into_owned();
+
+    let written = nostdb([
+        "query",
+        "CREATE (n:Function {name: \"added\"})",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(written.class, ExitClass::Success, "{}", written.err);
+    let parsed: serde_json::Value = serde_json::from_str(&written.out).unwrap();
+    assert_eq!(parsed["summary"]["writes"]["nodes_created"], 1);
+
+    let counted = nostdb([
+        "query",
+        "MATCH (n:Function) RETURN n.name ORDER BY n.name",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    let parsed: serde_json::Value = serde_json::from_str(&counted.out).unwrap();
+    assert_eq!(parsed["summary"]["rows"], 3, "the write was committed");
+}
+
+#[test]
+fn unsupported_syntax_is_a_usage_failure_and_a_semantic_error_is_validation() {
+    let dir = seeded_project("query-refusals");
+    let root = dir.path().to_string_lossy().into_owned();
+
+    // Outside the published subset: the remedy is to write something else.
+    let unsupported = nostdb([
+        "query",
+        "CREATE INDEX ON :Function(name)",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(unsupported.class, ExitClass::Usage);
+    assert!(
+        unsupported.err.contains("CYPHER_UNSUPPORTED"),
+        "{}",
+        unsupported.err
+    );
+    assert!(unsupported.out.is_empty());
+
+    // Inside the subset and wrong.
+    let semantic = nostdb(["query", "RETURN missing.name", "--project", &root]);
+    assert_eq!(semantic.class, ExitClass::Validation);
+    assert!(
+        semantic.err.contains("CYPHER_SEMANTIC_ERROR"),
+        "{}",
+        semantic.err
+    );
+}
+
+#[test]
+fn query_outside_a_project_is_a_usage_error() {
+    let dir = TempDir::new("query-unconfigured");
+    let result = nostdb([
+        "query",
+        "RETURN 1",
+        "--project",
+        dir.path().to_str().unwrap(),
+    ]);
+    assert_eq!(result.class, ExitClass::Usage);
+    assert!(result.err.contains("nostdb init"), "{}", result.err);
+}
+
+#[test]
+fn an_unknown_format_names_the_ones_that_exist() {
+    let result = nostdb(["query", "RETURN 1", "--format", "yaml"]);
+    assert_eq!(result.class, ExitClass::Usage);
+    assert!(result.err.contains("yaml"), "{}", result.err);
+    assert!(result.err.contains("json"), "{}", result.err);
+}
+
+#[test]
+fn a_format_option_may_be_written_either_way_and_may_follow_the_statement() {
+    let dir = seeded_project("query-option-forms");
+    let root = dir.path().to_string_lossy().into_owned();
+    for arguments in [
+        vec!["query", "--format", "json", "--project", &root, "RETURN 1"],
+        vec!["query", "RETURN 1", "--format=json", "--project", &root],
+    ] {
+        let owned: Vec<String> = arguments.iter().map(|a| (*a).to_owned()).collect();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let class = run(&owned, &mut out, &mut err);
+        assert_eq!(class, ExitClass::Success, "{arguments:?}: {err:?}");
+        serde_json::from_str::<serde_json::Value>(&String::from_utf8(out).unwrap())
+            .expect("JSON was asked for");
+    }
+}

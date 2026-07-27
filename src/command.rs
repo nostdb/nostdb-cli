@@ -41,6 +41,7 @@ Commands:
   check TARGET             Validate a .nost or .nostdb file
   convert INPUT OUTPUT     Convert between .nost and .nostdb, in either direction
   export --nost [PATH]     Write the active project's graph as canonical .nost
+  query [CYPHER]           Run one statement, or open the REPL when none is given
   --version [--json]       Report this build and every contract version it supports
 
 Data is written to stdout and diagnostics to stderr, so a machine-readable mode

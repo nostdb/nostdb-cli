@@ -22,8 +22,11 @@
 
 pub mod command;
 pub mod exit;
+pub mod output;
+pub mod query;
 
 pub use exit::ExitClass;
+pub use output::Format;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -82,6 +85,15 @@ pub enum Invocation {
     },
     /// `nostdb export --nost [PATH]`
     Export {
+        /// Where to start looking for the active project.
+        from: PathBuf,
+    },
+    /// `nostdb query [CYPHER] [--format FORMAT] [--project PATH]`
+    Query {
+        /// The statement to run, or none for the REPL.
+        cypher: Option<String>,
+        /// How to write the result.
+        format: Format,
         /// Where to start looking for the active project.
         from: PathBuf,
     },
@@ -203,6 +215,7 @@ impl Invocation {
                 }
                 Ok(Self::Export { from })
             }
+            "query" => parse_query(&remainder),
             other if other.starts_with('-') => Err(usage(format!("unknown option `{other}`"))),
             other => Err(usage(format!("unknown command `{other}`"))),
         }
@@ -217,8 +230,86 @@ impl Invocation {
             Self::Check { target } => command::check(&target, out, err),
             Self::Convert { input, output } => command::convert(&input, &output, out, err),
             Self::Export { from } => command::export(&from, out, err),
+            Self::Query {
+                cypher,
+                format,
+                from,
+            } => match cypher {
+                Some(text) => query::immediate(&from, &text, format, out, err),
+                None => {
+                    let stdin = std::io::stdin();
+                    let mut input = stdin.lock();
+                    query::repl(&from, format, &mut input, out, err)
+                }
+            },
         }
     }
+}
+
+/// Parses `query`'s operands.
+///
+/// The statement is positional and optional; omitting it opens the REPL. Options may
+/// appear before or after it, because a caller reaching for `--format` after typing a
+/// long statement should not have to move it.
+fn parse_query(remainder: &[&str]) -> Result<Invocation, UsageError> {
+    let mut cypher: Option<String> = None;
+    let mut format = Format::default();
+    let mut from = PathBuf::from(".");
+    let mut index = 0;
+
+    while index < remainder.len() {
+        let argument = remainder[index];
+        match argument {
+            "--format" | "--project" => {
+                let Some(value) = remainder.get(index + 1) else {
+                    return Err(usage(format!("`{argument}` needs a value")));
+                };
+                if argument == "--format" {
+                    format = Format::from_text(value).ok_or_else(|| {
+                        usage(format!(
+                            "`{value}` is not a format; expected one of {:?}",
+                            Format::NAMES
+                        ))
+                    })?;
+                } else {
+                    from = positional(value, "a project path")?;
+                }
+                index += 2;
+            }
+            other if other.starts_with("--format=") || other.starts_with("--project=") => {
+                let (name, value) = other.split_once('=').unwrap_or((other, ""));
+                if name == "--format" {
+                    format = Format::from_text(value).ok_or_else(|| {
+                        usage(format!(
+                            "`{value}` is not a format; expected one of {:?}",
+                            Format::NAMES
+                        ))
+                    })?;
+                } else {
+                    from = positional(value, "a project path")?;
+                }
+                index += 1;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage(format!("`query` does not take `{other}`")));
+            }
+            other => {
+                if cypher.is_some() {
+                    return Err(usage(format!(
+                        "`query` takes one statement, found `{other}`"
+                    )));
+                }
+                cypher = Some(other.to_owned());
+                index += 1;
+            }
+        }
+    }
+
+    Ok(Invocation::Query {
+        cypher,
+        format,
+        from,
+    })
 }
 
 #[cfg(test)]
