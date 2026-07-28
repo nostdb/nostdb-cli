@@ -476,24 +476,83 @@ fn list<T: std::fmt::Display>(values: &[T]) -> String {
 
 /// `nostdb --version [--json]`
 pub fn version(json: bool, out: &mut dyn Write) -> ExitClass {
+    // Every contract this build implements, in the registry's order, taken from the constant each
+    // owning crate exports rather than from a list written out here. A hand-written list is what
+    // this already was, and it fell six contracts behind without anything noticing.
+    //
+    // A `deferred` contract is deliberately absent. `credentials_version` has a reserved key and no
+    // authored contract, so nothing implements it, and claiming support for a contract nobody has
+    // written would be false in the one place a caller trusts to be exact.
+    let contracts: [(&str, String); 13] = [
+        ("nost_language_versions", list(&SUPPORTED_LANGUAGE_VERSIONS)),
+        ("nostdb_format_versions", list(&SUPPORTED_FORMAT_VERSIONS)),
+        ("settings_versions", list(&SUPPORTED_SETTINGS_VERSIONS)),
+        (
+            "catalog_versions",
+            list(nostdb_server::catalog::SUPPORTED_VERSIONS),
+        ),
+        (
+            "query_subset_versions",
+            list(&nostdb_core::cypher::SUPPORTED_QUERY_SUBSET_VERSIONS),
+        ),
+        (
+            "result_versions",
+            list(&[nostdb_core::result::RESULT_VERSION]),
+        ),
+        (
+            "provider_protocol_versions",
+            list(&[nostdb_core::provider::PROVIDER_PROTOCOL_VERSION]),
+        ),
+        (
+            "plugin_protocol_versions",
+            list(&[crate::plugin_run::PLUGIN_PROTOCOL_VERSION]),
+        ),
+        (
+            "manifest_versions",
+            list(&crate::plugin::SUPPORTED_MANIFEST_VERSIONS),
+        ),
+        (
+            "plugin_install_versions",
+            list(&crate::plugin_install::SUPPORTED_RECORD_VERSIONS),
+        ),
+        (
+            "view_exchange_versions",
+            list(&[crate::view::VIEW_EXCHANGE_VERSION]),
+        ),
+        (
+            "server_protocol_versions",
+            list(nostdb_server::message::SUPPORTED_VERSIONS),
+        ),
+        (
+            "change_set_versions",
+            list(&nostdb_core::change::SUPPORTED_CHANGE_SET_VERSIONS),
+        ),
+    ];
+
     if json {
-        // Hand-written rather than serialized, because this shape is a published
-        // contract in root PRD section 25.4 and a struct would let a field rename slip
-        // through as a silent output change.
-        let _ = writeln!(
-            out,
-            "{{\n  \"product\": \"{PRODUCT}\",\n  \"engine_version\": \"{VERSION}\",\n  \
-             \"nostdb_format_versions\": [{}],\n  \"nost_language_versions\": [{}],\n  \
-             \"settings_versions\": [{}]\n}}",
-            list(&SUPPORTED_FORMAT_VERSIONS),
-            list(&SUPPORTED_LANGUAGE_VERSIONS),
-            list(&SUPPORTED_SETTINGS_VERSIONS),
-        );
+        // Hand-written rather than serialized, because this shape is a published contract in root
+        // PRD section 25.4 and a struct would let a field rename slip through as a silent output
+        // change. Section 25.3 makes it the surface every install route is verified at.
+        let _ = writeln!(out, "{{");
+        let _ = writeln!(out, "  \"product\": \"{PRODUCT}\",");
+        let _ = writeln!(out, "  \"engine_version\": \"{VERSION}\",");
+        for (index, (key, versions)) in contracts.iter().enumerate() {
+            let comma = if index + 1 == contracts.len() {
+                ""
+            } else {
+                ","
+            };
+            let _ = writeln!(out, "  \"{key}\": [{versions}]{comma}");
+        }
+        let _ = writeln!(out, "}}");
     } else {
         let _ = writeln!(out, "{PRODUCT} {VERSION}");
-        let _ = writeln!(out, "nostdb_format  {}", list(&SUPPORTED_FORMAT_VERSIONS));
-        let _ = writeln!(out, "nost_language  {}", list(&SUPPORTED_LANGUAGE_VERSIONS));
-        let _ = writeln!(out, "settings       {}", list(&SUPPORTED_SETTINGS_VERSIONS));
+        for (key, versions) in &contracts {
+            // The `_versions` suffix is what the machine-readable key needs; a person reading a
+            // column of them does not.
+            let name = key.strip_suffix("_versions").unwrap_or(key);
+            let _ = writeln!(out, "{name:<26} {versions}");
+        }
     }
     ExitClass::Success
 }
