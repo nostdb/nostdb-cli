@@ -1,5 +1,15 @@
 [package]
-name = "nostdb-cli"
+# The package is `nostdb` and the library target is `nostdb_cli`.
+#
+# `docs/PRD.md` section 25.3 publishes the source-install route as
+# `cargo install --git ... --tag <version> --locked nostdb`, and that trailing word is a *package*
+# name, not a binary name. With the package called `nostdb-cli` the published command failed with
+# "could not find `nostdb`" — verified against the v0.1.0 tag, which is how this was found.
+#
+# The library target keeps its own name, so nothing that says `use nostdb_cli::` changes. The
+# repository stays `nostdb-cli`, because the repository is the boundary and the package is what cargo
+# resolves; they are allowed to differ and here they have to.
+name = "nostdb"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
