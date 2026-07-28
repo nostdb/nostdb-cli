@@ -265,13 +265,34 @@ pub fn start_daemon(
         return endpoint().map_err(|error| format!("{error}"));
     }
 
+    // The daemon's own diagnostics are kept rather than discarded. A start that failed and threw
+    // away what the daemon said about it cannot report why, which is how a failure becomes a guess —
+    // and this one already has been.
     let mut child = std::process::Command::new(binary)
         .args(["server", "run"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| format!("cannot start {}: {error}", binary.display()))?;
+
+    // Taken now so a failure below can read it. Left on the child it would still be readable, but
+    // only until the handle is dropped, and every early return drops it.
+    let mut complaint = child.stderr.take();
+    let mut said = move |child: &mut std::process::Child| -> String {
+        // The daemon is gone or going, so its pipe is at end-of-file and this cannot block.
+        let mut text = String::new();
+        if let Some(stream) = complaint.as_mut() {
+            use std::io::Read as _;
+            let _ = stream.read_to_string(&mut text);
+        }
+        let _ = child;
+        if text.trim().is_empty() {
+            "it said nothing".to_owned()
+        } else {
+            format!("it said: {}", text.trim())
+        }
+    };
 
     // Waiting for the endpoint rather than assuming it appeared. A start that returned immediately
     // would have the next command fail against a daemon that had not finished binding.
@@ -281,16 +302,21 @@ pub fn start_daemon(
             return endpoint().map_err(|error| format!("{error}"));
         }
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("the daemon exited immediately with {status}"));
+            return Err(format!(
+                "the daemon exited immediately with {status}, and {}",
+                said(&mut child)
+            ));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
 
     let _ = writeln!(err, "the daemon did not become reachable; stopping it");
     let _ = child.kill();
+    let _ = child.wait();
     Err(format!(
-        "the daemon did not become reachable within {} milliseconds",
-        timeout.as_millis()
+        "the daemon did not become reachable within {} milliseconds, and {}",
+        timeout.as_millis(),
+        said(&mut child)
     ))
 }
 

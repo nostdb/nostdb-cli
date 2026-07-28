@@ -115,9 +115,22 @@ if [ -f Cargo.toml ]; then
   cargo check --all-targets --all-features
   cargo clippy --all-targets --all-features -- -D warnings
   # The daemon round trip binds this user's real endpoint, so it is opt-in. It declines when a
-  # daemon is already running rather than stopping one it did not start, which is what makes it
-  # safe to switch on here and keeps a local run checking the same invariants as CI.
-  NOSTDB_DAEMON_TEST=1 cargo test --all-targets --all-features
+  # daemon is already running rather than stopping one it did not start, which is what makes it safe
+  # to switch on here and keeps a local run checking the same invariants as CI.
+  #
+  # It is left off where several repositories' suites run as one user in one job. A per-user
+  # singleton is not safe to share, and root CI shares it: the daemon's endpoint and lock are the
+  # same for every child running there. It went red once for a reason nothing recorded, which is
+  # itself why the daemon's own diagnostics are now kept rather than discarded.
+  #
+  # The coverage is not lost. This repository's own CI has the runner to itself and runs it there,
+  # which is where a daemon regression is caught.
+  if [ -n "${NOSTDB_SHARED_RUNNER:-}" ]; then
+    echo "daemon round trip: off, because this runner is shared with other repositories' suites"
+    cargo test --all-targets --all-features
+  else
+    NOSTDB_DAEMON_TEST=1 cargo test --all-targets --all-features
+  fi
 fi
 
 echo "nostdb-cli verification passed"
