@@ -29,6 +29,7 @@ pub mod exit;
 pub mod link;
 pub mod output;
 pub mod plan;
+pub mod plugin;
 pub mod query;
 pub mod server;
 pub mod sync;
