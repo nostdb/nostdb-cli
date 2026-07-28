@@ -3,6 +3,13 @@
 # Run by hand rather than on a tag push. Cutting a release is a deliberate act somebody performs, and
 # a workflow that fired on a tag would make it a side effect of pushing one.
 #
+# # Why there is no Windows target
+#
+# The daemon's endpoint contract specifies a named pipe for Windows, and `nostdb-server` implements
+# only the Unix domain socket — so nothing in NostDB compiles for Windows. The first run of this
+# matrix is what established that: four targets built and both Windows ones failed, which is what
+# `fail-fast: false` is for. Windows returns here when the daemon has its endpoint.
+#
 # # What it produces
 #
 # One archive per published target, each with two digests recorded by nostdb-distribution's assembler
@@ -66,12 +73,6 @@ jobs:
             runner: ubuntu-latest
             linker: aarch64-linux-gnu-gcc
             apt: gcc-aarch64-linux-gnu
-          - target: x86_64-pc-windows-msvc
-            key: win32-x64
-            runner: windows-latest
-          - target: aarch64-pc-windows-msvc
-            key: win32-arm64
-            runner: windows-latest
     steps:
       - name: Check out the CLI
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -129,7 +130,6 @@ jobs:
           name: release-${{ matrix.key }}
           path: |
             dist/*.tar.gz
-            dist/*.zip
             dist/${{ matrix.key }}.json
           if-no-files-found: error
           retention-days: 7
@@ -197,9 +197,6 @@ jobs:
               aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
             ls collected/nostdb-${{ inputs.version }}-$triple.tar.gz >/dev/null 2>&1 || missing="$missing $triple"
           done
-          for triple in aarch64-pc-windows-msvc x86_64-pc-windows-msvc; do
-            ls collected/nostdb-${{ inputs.version }}-$triple.zip >/dev/null 2>&1 || missing="$missing $triple"
-          done
           [ -z "$missing" ] || { echo "the release is missing:$missing" >&2; exit 1; }
           echo "every published target is present"
 
@@ -224,5 +221,4 @@ jobs:
             --notes "$notes" \
             ${{ inputs.draft && '--draft' || '' }} \
             collected/checksums.json \
-            collected/nostdb-$VERSION-*.tar.gz \
-            collected/nostdb-$VERSION-*.zip
+            collected/nostdb-$VERSION-*.tar.gz
