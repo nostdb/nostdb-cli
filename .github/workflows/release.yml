@@ -1,0 +1,228 @@
+# Assembles and publishes a NostDB release.
+#
+# Run by hand rather than on a tag push. Cutting a release is a deliberate act somebody performs, and
+# a workflow that fired on a tag would make it a side effect of pushing one.
+#
+# # What it produces
+#
+# One archive per published target, each with two digests recorded by nostdb-distribution's assembler
+# — one for the archive and one for the binary inside it — collected into a single `checksums.json`
+# attached to the release. The npm launcher ships that file, so an artifact and the digest that would
+# accept it never travel by the same route.
+#
+# # Why the assembler is checked out rather than reimplemented
+#
+# `nostdb-distribution` owns release assembly, and its own suite gates the archive shape, the digests,
+# and their reproducibility. A second assembler here would be a second answer to what a release
+# archive is, and the digests would disagree the first time either changed.
+#
+# Action dependencies, each maintained by GitHub, MIT licensed, and pinned to an exact commit rather
+# than a floating major tag:
+#
+#   actions/checkout          v7.0.1  3d3c42e5aac5ba805825da76410c181273ba90b1
+#   actions/upload-artifact   v5      330a01c490aca151604b8cf639adc76d48f6c5d4
+#   actions/download-artifact v5      634f93cb2916e3fdff6788551b99b062d0335ce0
+#
+# The release itself is created with the GitHub CLI, which every runner image already has, rather than
+# with a third-party action: one fewer dependency for something that is one command.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version to release, without a leading v. Must equal the crate's version."
+        required: true
+      draft:
+        description: "Create the release as a draft rather than published."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # Every target is attempted even when one fails, so a broken toolchain on one platform reports
+      # itself rather than hiding behind the first failure.
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            key: darwin-arm64
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            key: darwin-x64
+            runner: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            key: linux-x64
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            key: linux-arm64
+            runner: ubuntu-latest
+            linker: aarch64-linux-gnu-gcc
+            apt: gcc-aarch64-linux-gnu
+          - target: x86_64-pc-windows-msvc
+            key: win32-x64
+            runner: windows-latest
+          - target: aarch64-pc-windows-msvc
+            key: win32-arm64
+            runner: windows-latest
+    steps:
+      - name: Check out the CLI
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Check out the release assembler
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nostdb/nostdb-distribution
+          path: .distribution
+          persist-credentials: false
+
+      - name: Refuse a version the crate does not carry
+        shell: bash
+        run: |
+          # The version in the input, the crate, and the launcher must be one version. A release whose
+          # archive names disagreed with what the binary reports would fail the assembler's attestation
+          # later, and finding that out after six builds is finding it out too late.
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          launcher=$(node -e 'console.log(require("./.distribution/package.json").version)')
+          asked='${{ inputs.version }}'
+          echo "asked $asked, crate $crate, launcher $launcher"
+          [ "$asked" = "$crate" ] || { echo "the crate is $crate" >&2; exit 1; }
+          [ "$asked" = "$launcher" ] || { echo "the launcher is $launcher" >&2; exit 1; }
+
+      - name: Install the cross linker
+        if: matrix.apt != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        env:
+          # Named per target rather than globally, so a linker for one platform cannot be picked up by
+          # another and produce a binary nobody can explain.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Assemble the archive
+        shell: bash
+        run: |
+          binary=target/${{ matrix.target }}/release/nostdb
+          [ -f "$binary" ] || binary="$binary.exe"
+          node .distribution/scripts/assemble-release.mjs \
+            --binary "$binary" --target ${{ matrix.key }} --out dist
+
+      - name: Keep the archive and its digests
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: release-${{ matrix.key }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/${{ matrix.key }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Assemble the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the CLI
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Collect every target's archive
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          path: collected
+          merge-multiple: true
+
+      - name: Write the checksums every route verifies against
+        shell: bash
+        run: |
+          # One document from every target's recorded digests. The launcher ships it and a formula reads
+          # it, so the two verify against the same numbers rather than each against its own.
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const from = "collected";
+          const artifacts = {};
+          let targets = 0;
+          for (const name of fs.readdirSync(from).sort()) {
+            if (!name.endsWith(".json")) continue;
+            Object.assign(artifacts, JSON.parse(fs.readFileSync(path.join(from, name), "utf8")));
+            targets += 1;
+          }
+          if (targets === 0) throw new Error("no target recorded any digest");
+          const attested = Object.values(artifacts).filter((a) => a.attested).length;
+          const document = {
+            checksums_version: 1,
+            version: process.env.VERSION,
+            note:
+              "Digests of the artifacts this release publishes, written by the release assembly. " +
+              `${targets} targets, ${attested} of ${Object.keys(artifacts).length} entries attested: ` +
+              "an entry is attested when the binary was run and reported the product and version it " +
+              "should, which a cross-compiled target cannot do.",
+            artifacts,
+          };
+          fs.writeFileSync("collected/checksums.json", `${JSON.stringify(document, null, 2)}\n`);
+          console.log(`${targets} targets, ${Object.keys(artifacts).length} digests`);
+          NODE
+        env:
+          VERSION: ${{ inputs.version }}
+
+      - name: Refuse a release that is missing a target
+        shell: bash
+        run: |
+          # Every published target must be present. A release missing one would leave the launcher
+          # refusing on a platform it advertises, and the checksums would faithfully describe a release
+          # nobody can install there.
+          missing=
+          for triple in aarch64-apple-darwin x86_64-apple-darwin \
+              aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            ls collected/nostdb-${{ inputs.version }}-$triple.tar.gz >/dev/null 2>&1 || missing="$missing $triple"
+          done
+          for triple in aarch64-pc-windows-msvc x86_64-pc-windows-msvc; do
+            ls collected/nostdb-${{ inputs.version }}-$triple.zip >/dev/null 2>&1 || missing="$missing $triple"
+          done
+          [ -z "$missing" ] || { echo "the release is missing:$missing" >&2; exit 1; }
+          echo "every published target is present"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          notes=$(printf '%s\n' \
+            "Native archives for every published target, with \`checksums.json\` recording a digest for" \
+            "each archive and for the binary inside it." \
+            "" \
+            "The npm launcher ships that same file, so an artifact and the digest that would accept it" \
+            "do not travel by the same route. Verify before extracting:" \
+            "" \
+            '```bash' \
+            "shasum -a 256 nostdb-$VERSION-<target>.tar.gz" \
+            '```')
+          gh release create "v$VERSION" \
+            --title "nostdb $VERSION" \
+            --notes "$notes" \
+            ${{ inputs.draft && '--draft' || '' }} \
+            collected/checksums.json \
+            collected/nostdb-$VERSION-*.tar.gz \
+            collected/nostdb-$VERSION-*.zip
