@@ -67,7 +67,7 @@ impl std::fmt::Display for PluginCode {
 pub struct PluginSource {
     owner: String,
     repository: String,
-    reference: Option<String>,
+    reference: String,
     subdirectory: Option<String>,
 }
 
@@ -84,14 +84,13 @@ impl PluginSource {
         &self.repository
     }
 
-    /// The ref the author named, when they named one.
+    /// The ref the author named.
     ///
-    /// `None` means the manager resolves the default branch **once** and records the commit.
-    /// A user does not follow a branch: they pin what they installed, and moving the branch
-    /// does not move them.
+    /// Required, and resolved once to a commit. A user does not follow a branch: they pin what
+    /// they installed, and moving the branch does not move them.
     #[must_use]
-    pub fn reference(&self) -> Option<&str> {
-        self.reference.as_deref()
+    pub fn reference(&self) -> &str {
+        &self.reference
     }
 
     /// The subdirectory within the repository, when one was named.
@@ -136,17 +135,21 @@ impl PluginSource {
             return Err("a subdirectory is written after `#`, not as a path segment".to_owned());
         }
 
-        let reference = match query {
-            None => None,
-            Some(query) => {
-                let value = query
-                    .strip_prefix("ref=")
-                    .ok_or_else(|| format!("`{query}` is not `ref=<git-ref>`"))?;
-                if value.is_empty() {
-                    return Err("the ref is empty".to_owned());
-                }
-                Some(value.to_owned())
+        // A ref is required, not defaulted. A manager retrieves through a provider, and the
+        // provider protocol requires every locator to carry one and forbids inventing one,
+        // because a default branch can change and a locator is an identity. Requiring it here is
+        // also what makes an install visible in the command that performed it.
+        let reference = {
+            let query = query.ok_or_else(|| {
+                "a source names a ref: `?ref=<git-ref>`, resolved once to a commit".to_owned()
+            })?;
+            let value = query
+                .strip_prefix("ref=")
+                .ok_or_else(|| format!("`{query}` is not `ref=<git-ref>`"))?;
+            if value.is_empty() {
+                return Err("the ref is empty".to_owned());
             }
+            value.to_owned()
         };
 
         if let Some(sub) = subdirectory {
@@ -175,12 +178,9 @@ impl std::fmt::Display for PluginSource {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "https://github.com/{}/{}",
-            self.owner, self.repository
+            "https://github.com/{}/{}?ref={}",
+            self.owner, self.repository, self.reference
         )?;
-        if let Some(reference) = &self.reference {
-            write!(formatter, "?ref={reference}")?;
-        }
         if let Some(subdirectory) = &self.subdirectory {
             write!(formatter, "#{subdirectory}")?;
         }

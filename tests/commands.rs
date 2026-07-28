@@ -2196,9 +2196,10 @@ fn a_plugin_source_carrying_a_credential_is_refused_rather_than_stripped() {
 
 #[test]
 fn a_plugin_source_with_no_ref_is_refused_and_says_what_to_do() {
-    // The manifest contract says a manager resolves a default branch; the provider protocol
-    // forbids a locator without a ref and gives its reason. The conflict is recorded in the root
-    // progress document, and until it is resolved this refuses rather than guessing.
+    // A ref is required by the source grammar, so this is refused while parsing rather than on
+    // the way to a provider. The first revision of the manifest contract said a manager resolves
+    // a default branch with no ref, which the provider protocol forbade a locator from
+    // expressing; the contract now requires the ref, and this is what that looks like to a user.
     let result = nostdb_run(&["plugin", "add", "https://github.com/o/r"]);
     assert_eq!(result.class, ExitClass::Validation);
     assert!(

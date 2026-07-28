@@ -807,27 +807,22 @@ pub struct Fetched {
 
 /// The locator a plugin source resolves through.
 ///
-/// The provider's contract requires a `ref` and forbids inventing one, because a default branch
-/// can change and a locator is an identity. A source that named no ref therefore cannot be
-/// turned into a locator here — see the recorded conflict in the root progress document.
+/// Infallible, and that is the point of requiring a `ref` in the source grammar: the provider's
+/// contract requires every locator to carry one and forbids inventing one, so a source that could
+/// not supply one would be a source no locator could represent. Refusing it while parsing means
+/// nothing downstream has to carry the possibility.
 ///
-/// # Errors
-///
-/// Returns a reason when the source names no ref.
-pub fn locator_for(source: &PluginSource) -> Result<String, InstallError> {
-    let reference = source.reference().ok_or_else(|| {
-        InstallError::new(
-            InstallCode::SourceInvalid,
-            "this source names no ref, and resolving a default branch is a published conflict \
-             between the manifest contract and the provider protocol; name a ref with \
-             `?ref=<git-ref>`",
-        )
-    })?;
-    Ok(format!(
-        "github://{}/{}/?ref={reference}",
+/// The path is the repository root even for a subdirectory install. The subdirectory narrows which
+/// entries are part of the plugin; it does not narrow the snapshot, because one enumeration of the
+/// whole tree is what tells the manager which entries those are.
+#[must_use]
+pub fn locator_for(source: &PluginSource) -> String {
+    format!(
+        "github://{}/{}/?ref={}",
         source.owner(),
-        source.repository()
-    ))
+        source.repository(),
+        source.reference()
+    )
 }
 
 /// Fetches a plugin and decides whether it may be installed. Writes nothing.
@@ -843,8 +838,7 @@ pub fn fetch<T: Transport>(
     source: &PluginSource,
     engine: &Version,
 ) -> Result<Fetched, FetchError> {
-    let locator = locator_for(source)?;
-    let snapshot = client.resolve(&locator, None)?;
+    let snapshot = client.resolve(&locator_for(source), None)?;
     let entries = client.enumerate(&snapshot.snapshot)?;
     let planned = plan(&entries, source.subdirectory())?;
 
@@ -1334,14 +1328,6 @@ pub fn run(
         },
     };
 
-    // Whether this source can become a locator at all is decidable here, and it is checked before
-    // a provider is demanded. Told to install a provider first, somebody would install one and
-    // then meet this refusal anyway.
-    if let Err(error) = locator_for(&parsed) {
-        let _ = writeln!(err, "{}: {}", error.code, error.reason);
-        return error.code.exit_class();
-    }
-
     let Some(program) = std::env::var_os(PROVIDER_VARIABLE).map(PathBuf::from) else {
         let _ = writeln!(
             err,
@@ -1709,18 +1695,18 @@ mod tests {
     }
 
     #[test]
-    fn a_source_with_no_ref_cannot_be_turned_into_a_locator() {
-        let source = PluginSource::parse("https://github.com/example/viewer").expect("parses");
-        let error = locator_for(&source).expect_err("refused");
-        assert_eq!(error.code, InstallCode::SourceInvalid);
-        assert!(error.reason.contains("ref"));
-
+    fn a_pinned_source_becomes_a_lowered_locator() {
+        // A source with no ref never reaches here: the grammar refuses it, which is why building
+        // a locator cannot fail.
         let pinned =
             PluginSource::parse("https://github.com/Example/Viewer?ref=v1.2.3").expect("parses");
-        assert_eq!(
-            locator_for(&pinned).expect("a locator"),
-            "github://example/viewer/?ref=v1.2.3"
-        );
+        assert_eq!(locator_for(&pinned), "github://example/viewer/?ref=v1.2.3");
+
+        // The subdirectory narrows the entries, not the snapshot: one enumeration of the whole
+        // tree is what tells the manager which entries are part of the plugin.
+        let nested =
+            PluginSource::parse("https://github.com/e/v?ref=main#plugins/viewer").expect("parses");
+        assert_eq!(locator_for(&nested), "github://e/v/?ref=main");
     }
 
     #[test]
