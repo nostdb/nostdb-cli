@@ -335,16 +335,21 @@ impl Invocation {
                     .copied()
                     .filter(|word| *word != "--rebuild")
                     .collect();
+                let (positional_path, rest) = split_project_path(&rest, "build")?;
                 let (format, from) = parse_shared_options(&rest, "build")?;
                 Ok(Self::Build {
-                    from,
+                    from: positional_path.unwrap_or(from),
                     format,
                     rebuild,
                 })
             }
             "plan" => {
-                let (format, from) = parse_shared_options(&remainder, "plan")?;
-                Ok(Self::Plan { from, format })
+                let (positional_path, rest) = split_project_path(&remainder, "plan")?;
+                let (format, from) = parse_shared_options(&rest, "plan")?;
+                Ok(Self::Plan {
+                    from: positional_path.unwrap_or(from),
+                    format,
+                })
             }
             "catalog" => crate::catalog::parse(&remainder)
                 .map(|action| Self::Catalog { action })
@@ -498,6 +503,42 @@ fn parse_plugin(remainder: &[&str]) -> Result<Invocation, UsageError> {
 }
 
 /// Parses the `--format` and `--project` options both `link` and `query` accept.
+/// Splits an optional leading project path from the options that follow it.
+///
+/// `build` and `plan` publish `[PATH]` in their help and refused it: `parse_shared_options` treats
+/// every non-flag word as an error, so `nostdb build .` answered "`build` does not take `.`" while
+/// the help line above it said otherwise. `init`, `sync`, and `export` all took one, so the surface
+/// disagreed with itself as well as with its own help.
+///
+/// Peeled off here rather than by loosening `parse_shared_options`, which `link` and `apply` also
+/// use after consuming their own operands. Accepting a positional there would have made a stray word
+/// they currently refuse pass silently.
+///
+/// # Errors
+///
+/// Returns a usage error when a path is given twice — once positionally and once with `--project`.
+/// Choosing one of the two silently is how a caller ends up analyzing a directory they did not name.
+fn split_project_path<'a>(
+    remainder: &[&'a str],
+    command: &str,
+) -> Result<(Option<PathBuf>, Vec<&'a str>), UsageError> {
+    let Some((first, rest)) = remainder.split_first() else {
+        return Ok((None, Vec::new()));
+    };
+    if first.starts_with('-') {
+        return Ok((None, remainder.to_vec()));
+    }
+    if rest
+        .iter()
+        .any(|word| *word == "--project" || word.starts_with("--project="))
+    {
+        return Err(usage(format!(
+            "`{command}` was given a path twice, as `{first}` and with `--project`"
+        )));
+    }
+    Ok((Some(positional(first, "a project path")?), rest.to_vec()))
+}
+
 fn parse_shared_options(
     remainder: &[&str],
     command: &str,

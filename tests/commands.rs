@@ -2266,3 +2266,66 @@ fn the_plugin_help_topic_states_that_a_plugin_is_not_sandboxed() {
         result.out
     );
 }
+
+/// `build` and `plan` accept the positional path their own help advertises.
+///
+/// They did not. `help` published `build [PATH]` and `plan [PATH]` while the parser answered
+/// "`build` does not take `.`", so the surface contradicted its own documentation — and contradicted
+/// `init`, `sync`, and `export`, which all took one. Nothing caught it because every test passed the
+/// path with `--project`, which is the spelling the parser did accept.
+#[test]
+fn build_and_plan_take_the_positional_path_their_help_publishes() {
+    use nostdb_cli::Invocation;
+    use std::path::PathBuf;
+
+    for command in ["build", "plan"] {
+        let arguments = vec![command.to_owned(), "./somewhere".to_owned()];
+        let parsed = Invocation::parse(&arguments)
+            .unwrap_or_else(|error| panic!("{command} ./somewhere: {error}"));
+        let from = match parsed {
+            Invocation::Build { from, .. } | Invocation::Plan { from, .. } => from,
+            other => panic!("{command} parsed as {other:?}"),
+        };
+        assert_eq!(from, PathBuf::from("./somewhere"), "{command}");
+    }
+}
+
+/// The same path given twice is refused rather than one of the two being picked.
+#[test]
+fn a_path_given_positionally_and_with_project_is_refused() {
+    use nostdb_cli::Invocation;
+
+    let arguments = vec![
+        "build".to_owned(),
+        "./one".to_owned(),
+        "--project".to_owned(),
+        "./two".to_owned(),
+    ];
+    let error = Invocation::parse(&arguments).expect_err("refused");
+    let message = format!("{error}");
+    assert!(
+        message.contains("twice"),
+        "the refusal must say what was wrong: {message}"
+    );
+}
+
+/// `--rebuild` may appear on either side of the path.
+#[test]
+fn rebuild_and_the_positional_path_do_not_depend_on_order() {
+    use nostdb_cli::Invocation;
+    use std::path::PathBuf;
+
+    for arguments in [
+        vec!["build".to_owned(), "--rebuild".to_owned(), "./p".to_owned()],
+        vec!["build".to_owned(), "./p".to_owned(), "--rebuild".to_owned()],
+    ] {
+        match Invocation::parse(&arguments).expect("parsed") {
+            Invocation::Build {
+                from,
+                rebuild: true,
+                ..
+            } => assert_eq!(from, PathBuf::from("./p")),
+            other => panic!("{arguments:?} parsed as {other:?}"),
+        }
+    }
+}
