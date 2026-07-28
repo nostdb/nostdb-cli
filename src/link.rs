@@ -1,13 +1,17 @@
-//! `nostdb link list`, `check`, `add`, and `remove`.
+//! `nostdb link list`, `check`, `add`, `remove`, and `refresh`.
 //!
 //! `list` and `check` report. `add` and `remove` change the declaration in the database
 //! and its mirror in the settings, which the Engine does through the multi-file journal;
 //! nothing here writes either file.
 //!
-//! `refresh` is refused. It advances a remote snapshot to a newer immutable commit, and a
-//! local link has no snapshot to advance — it is read live at every query. Implementing it
-//! against a local source would mean inventing a meaning the product contract does not
-//! give it, so it waits for the GitHub provider.
+//! `refresh` advances a remote snapshot to a newer immutable commit. It was refused until the
+//! GitHub provider existed, because a local link has no snapshot to advance — it is read live at
+//! every query — and implementing it against a local source would have meant inventing a meaning
+//! the product contract does not give it.
+//!
+//! It now resolves through a provider process, which this module starts and stops. A project whose
+//! links are all local still launches nothing: a local link has nothing to refresh, so needing a
+//! provider installed to be told so would be the same invention in a new place.
 
 use crate::exit::ExitClass;
 use crate::output::Format;
@@ -482,7 +486,12 @@ mod tests {
         assert_eq!(action, Action::Refresh);
         assert!(action.writes());
         assert_eq!(rest, ["--project", "/tmp"]);
-        assert!(Action::DEFERRED.is_empty(), "every link action is built");
+
+        // `DEFERRED` used to be asserted empty here. It is empty now that `refresh` has landed,
+        // which makes the assertion a compile-time tautology that clippy's `const_is_empty`
+        // rejects, and the loop in `only_the_implemented_actions_are_read` already requires every
+        // deferred action to fail to parse — so it keeps working if one ever returns, which a
+        // const emptiness check would not.
     }
 
     #[test]
