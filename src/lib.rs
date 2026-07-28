@@ -35,6 +35,7 @@ pub mod plugin_run;
 pub mod query;
 pub mod server;
 pub mod sync;
+pub mod view;
 
 pub use exit::ExitClass;
 pub use output::Format;
@@ -154,6 +155,13 @@ pub enum Invocation {
         action: crate::plugin_install::Action,
         /// Where to start looking for the active project.
         from: PathBuf,
+    },
+    /// `nostdb view [PATH] [--standalone]`
+    View {
+        /// Where to start looking for the active project.
+        from: PathBuf,
+        /// Whether a single self-contained file was asked for.
+        standalone: bool,
     },
     /// `nostdb query [CYPHER] [--format FORMAT] [--project PATH]`
     Query {
@@ -289,6 +297,29 @@ impl Invocation {
             }
             "link" => parse_link(&remainder),
             "plugin" => parse_plugin(&remainder),
+            "view" => {
+                let mut from = PathBuf::from(".");
+                let mut standalone = false;
+                let mut saw_path = false;
+                for argument in &remainder {
+                    match *argument {
+                        "--standalone" => standalone = true,
+                        other if other.starts_with('-') => {
+                            return Err(usage(format!("unknown option `{other}`")));
+                        }
+                        other => {
+                            if saw_path {
+                                return Err(usage(format!(
+                                    "`view` takes one path, found `{other}`"
+                                )));
+                            }
+                            from = positional(other, "a path")?;
+                            saw_path = true;
+                        }
+                    }
+                }
+                Ok(Self::View { from, standalone })
+            }
             "apply" => {
                 let Some((first, rest)) = remainder.split_first() else {
                     return Err(usage("`apply` needs a change set file"));
@@ -371,6 +402,7 @@ impl Invocation {
             }
             Self::Server { action } => server::execute(action, out, err),
             Self::Sync { from } => sync::run(&from, out, err),
+            Self::View { from, standalone } => view::run(&from, standalone, out, err),
             Self::Plugin { action, from } => {
                 // Whether anybody can answer the scope question is decided here, where the
                 // process streams are, and passed in as a fact. Everything below stays drivable

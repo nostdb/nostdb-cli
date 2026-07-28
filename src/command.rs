@@ -48,6 +48,8 @@ Commands:
   build [PATH] [--rebuild] Analyze the project's source and commit what it found
   apply FILE               Apply a change set to the active project
   sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
+  view [PATH] [--standalone]
+                           Render the project's graph through a viewer plugin
   plugin ACTION            Install a plugin from a pinned GitHub source
   catalog ACTION           Register, remove, or list named databases for this user
   server [ACTION]          Run the per-user local daemon, or report on it
@@ -208,6 +210,37 @@ two a person meant to keep.
 
 `nost: false` removes only the generated source it was configured to write. It
 never removes the database or a file this build did not create.
+"
+        }
+        "view" => {
+            "\
+nostdb view [PATH] [--standalone]
+
+Renders the project's graph through an installed viewer plugin, writing into:
+
+  .nostdb/out/
+
+What a viewer receives is the root graph and every recursively reachable linked
+graph, with the source each item came from, an entry for every declared link
+including the ones that could not be reached, and evidence metadata where the
+graph carries it. It never receives .nostdb.
+
+The data is handed over as a read-only artifact the Engine wrote, in the viewer
+exchange format, with a digest the viewer checks before reading it. The artifact
+is removed when the invocation ends, including when it failed.
+
+An unreachable link is reported as a warning and its entry is still sent, because
+a link that could not be reached stays declared. A graph with disconnected parts
+stays disconnected: nothing in the exchange format can express a relationship the
+graph does not have.
+
+  --standalone   asks for one self-contained file rather than data beside it
+
+If no installed plugin implements `view`, this reports PLUGIN_REQUIRED and names
+the recommended plugin, its pinned source, and the exact commands. It installs
+nothing on its own.
+
+A plugin is not sandboxed. It runs as your user, with your files.
 "
         }
         "plugin" => {
@@ -820,9 +853,9 @@ mod tests {
     /// Stated once and used by both checks below. Each of them used to carry its own list of
     /// six, written when the surface had six commands and never extended: a test named
     /// `every_command` that covered under half of them read as coverage it did not have.
-    const EVERY_COMMAND: [&str; 14] = [
+    const EVERY_COMMAND: [&str; 15] = [
         "help", "init", "check", "convert", "export", "query", "link", "plan", "build", "apply",
-        "sync", "plugin", "catalog", "server",
+        "sync", "view", "plugin", "catalog", "server",
     ];
 
     #[test]
