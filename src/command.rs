@@ -146,8 +146,18 @@ asks it.
 `remove` removes a declaration, never data. Nothing reached through a link was
 ever part of this database.
 
-`refresh` is not implemented. It advances a remote snapshot to a newer immutable
-commit, and a local link is read live and has no snapshot to advance.
+  refresh   resolves every remote link and records the commit it now points at
+
+`refresh` is the only thing that advances a snapshot. A query never does, so two
+queries a week apart see the same commit unless somebody asked for a newer one.
+
+A local link is read live at every query and has no snapshot to advance, which
+`refresh` reports rather than treating as a failure. A link that cannot be
+reached keeps the commit it had: forgetting where it pointed would turn one
+unreachable minute into a rebuild of everything it reached.
+
+The provider executable is named by NOSTDB_GITHUB_PROVIDER, and is started only
+when a remote link needs one.
 "
         }
         "apply" => {

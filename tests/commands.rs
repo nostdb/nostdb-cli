@@ -730,16 +730,40 @@ fn a_remote_link_says_there_is_no_provider() {
 }
 
 #[test]
-fn a_deferred_link_action_says_it_is_not_built_rather_than_unknown() {
-    // A caller who typed a real command deserves to be told it is not built yet, and to
-    // be told the reason that is actually true. `refresh` is not waiting on the journal —
-    // `add` and `remove` use the journal now. It is waiting on there being a snapshot to
-    // advance, which a link read live from the local filesystem does not have.
-    let result = nostdb(["link", "refresh"]);
-    assert_eq!(result.class, ExitClass::Usage);
-    assert!(result.err.contains("not implemented yet"), "{}", result.err);
-    assert!(result.err.contains("snapshot"), "{}", result.err);
-    assert!(!result.err.contains("journal"), "{}", result.err);
+fn refresh_reports_a_local_link_as_having_no_snapshot_rather_than_failing() {
+    // The reason it was refused for two Stages, now answered rather than deferred: a local
+    // link is read live at every query, so there is nothing to advance.
+    let dir = TempDir::new("link-refresh-local");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    nostdb(["link", "add", "./child", "--project", &root]);
+
+    let result = nostdb(["link", "refresh", "--format", "json", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    let document: serde_json::Value = serde_json::from_str(&result.out).unwrap();
+    assert_eq!(document["links"][0]["outcome"], "not_remote");
+}
+
+#[test]
+fn refresh_without_a_provider_reports_the_link_unavailable_rather_than_failing() {
+    // An unreachable source keeps its declaration. A missing provider is the same kind of
+    // fact about this machine as an unreachable host is about the network.
+    let dir = TempDir::new("link-refresh-no-provider");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    nostdb([
+        "link",
+        "add",
+        "github://example/payments/?ref=main",
+        "--project",
+        &root,
+    ]);
+
+    let result = nostdb(["link", "refresh", "--format", "json", "--project", &root]);
+    assert_eq!(result.class, ExitClass::Success, "{}", result.err);
+    let document: serde_json::Value = serde_json::from_str(&result.out).unwrap();
+    assert_eq!(document["links"][0]["outcome"], "unavailable");
+    assert!(result.err.contains("warning:"), "{}", result.err);
 }
 
 #[test]

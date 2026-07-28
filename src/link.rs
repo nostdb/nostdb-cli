@@ -12,7 +12,9 @@
 use crate::exit::ExitClass;
 use crate::output::Format;
 use nostdb_core::federation::{Federation, LinkStatus};
-use nostdb_core::project::{LinkChange, Project};
+use nostdb_core::project::{LinkChange, Project, RefreshOutcome, RefreshedSnapshot};
+use nostdb_core::provider::ProviderClient;
+use nostdb_core::provider_process::ProviderProcess;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,19 +38,21 @@ pub enum Action {
         /// The locator naming the link to remove.
         source: String,
     },
+    /// Resolve every remote link and record the commit it now points at.
+    Refresh,
 }
 
 impl Action {
     /// Subcommands this build implements.
-    pub const IMPLEMENTED: [&'static str; 4] = ["list", "check", "add", "remove"];
+    pub const IMPLEMENTED: [&'static str; 5] = ["list", "check", "add", "remove", "refresh"];
 
     /// Subcommands the product contract names and this build does not implement.
-    pub const DEFERRED: [&'static str; 1] = ["refresh"];
+    pub const DEFERRED: [&'static str; 0] = [];
 
     /// Reports whether this action changes state.
     #[must_use]
     pub const fn writes(&self) -> bool {
-        matches!(self, Self::Add { .. } | Self::Remove { .. })
+        matches!(self, Self::Add { .. } | Self::Remove { .. } | Self::Refresh)
     }
 }
 
@@ -104,18 +108,20 @@ pub fn parse<'a>(words: &'a [&'a str]) -> Result<(Action, &'a [&'a str]), String
                 rest,
             ))
         }
-        "refresh" => Err(
-            "`link refresh` is not implemented yet: it advances a remote snapshot to a \
-             newer immutable commit, and a local link is read live and has no snapshot to \
-             advance. It waits for the GitHub provider."
-                .to_owned(),
-        ),
+        "refresh" => Ok((Action::Refresh, rest)),
         other => Err(format!(
             "`{other}` is not a link action; expected one of {:?}",
             Action::IMPLEMENTED
         )),
     }
 }
+
+/// Where the provider executable is named.
+///
+/// An environment variable rather than a settings field: a provider is a machine-local
+/// installation detail, and a path in a shared settings file would name an executable that
+/// does not exist on somebody else's machine — or, worse, one that does.
+pub const PROVIDER_VARIABLE: &str = "NOSTDB_GITHUB_PROVIDER";
 
 fn global_settings_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
@@ -249,6 +255,7 @@ fn change(
         Action::Remove { source } => project
             .remove_link(source)
             .map(|change| ("removed", change)),
+        Action::Refresh => return refresh(project, format, out, err),
         Action::List | Action::Check => unreachable!("guarded by Action::writes"),
     };
     match outcome {
@@ -261,6 +268,111 @@ fn change(
             ExitClass::for_project_error(&error)
         }
     }
+}
+
+/// Runs `nostdb link refresh`.
+///
+/// Resolution goes through a provider process, which this starts and stops. A local link
+/// needs none, so a project with no remote link never launches one.
+fn refresh(
+    project: &Project,
+    format: Format,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitClass {
+    let program = std::env::var_os(PROVIDER_VARIABLE).map(PathBuf::from);
+    let mut started: Option<ProviderClient<ProviderProcess>> = None;
+
+    let outcomes = project.refresh_links(|locator| {
+        if started.is_none() {
+            // Started on first use rather than up front: a project whose links are all
+            // local should not need a provider installed to be told it has nothing to do.
+            let Some(program) = program.as_deref() else {
+                return Err(format!(
+                    "{PROVIDER_VARIABLE} names no provider executable, and {locator} needs one"
+                ));
+            };
+            let process = ProviderProcess::start(program, &[])?;
+            let mut client = ProviderClient::new(process);
+            client.handshake().map_err(|error| error.to_string())?;
+            started = Some(client);
+        }
+        let client = started.as_mut().ok_or("the provider did not start")?;
+        // The credential is named in settings and resolved by the provider. Nothing here
+        // holds a secret, which is why nothing here can leak one.
+        let snapshot = client
+            .resolve(locator, None)
+            .map_err(|error| error.to_string())?;
+        Ok(RefreshedSnapshot {
+            commit: snapshot.snapshot,
+            digest: None,
+        })
+    });
+
+    let outcomes = match outcomes {
+        Ok(outcomes) => outcomes,
+        Err(error) => {
+            let _ = writeln!(err, "{error}");
+            return ExitClass::for_project_error(&error);
+        }
+    };
+
+    match format {
+        Format::Json | Format::Jsonl => {
+            let document = json!({
+                "links": outcomes.iter().map(|outcome| match outcome {
+                    RefreshOutcome::Advanced { source, from, to } => json!({
+                        "source": source, "outcome": "advanced", "from": from, "to": to,
+                    }),
+                    RefreshOutcome::Unchanged { source, commit } => json!({
+                        "source": source, "outcome": "unchanged", "commit": commit,
+                    }),
+                    RefreshOutcome::Unavailable { source, reason } => json!({
+                        "source": source, "outcome": "unavailable", "reason": reason,
+                    }),
+                    RefreshOutcome::NotRemote { source } => json!({
+                        "source": source, "outcome": "not_remote",
+                    }),
+                }).collect::<Vec<_>>(),
+            });
+            let _ = writeln!(
+                out,
+                "{}",
+                serde_json::to_string_pretty(&document).unwrap_or_else(|_| document.to_string())
+            );
+        }
+        Format::Table | Format::Csv => {
+            for outcome in &outcomes {
+                match outcome {
+                    RefreshOutcome::Advanced { source, from, to } => {
+                        let _ = writeln!(
+                            out,
+                            "advanced   {source} {} -> {to}",
+                            from.as_deref().unwrap_or("(none)")
+                        );
+                    }
+                    RefreshOutcome::Unchanged { source, commit } => {
+                        let _ = writeln!(out, "unchanged  {source} {commit}");
+                    }
+                    RefreshOutcome::Unavailable { source, .. } => {
+                        let _ = writeln!(out, "unavailable {source}");
+                    }
+                    RefreshOutcome::NotRemote { source } => {
+                        let _ = writeln!(out, "local      {source}");
+                    }
+                }
+            }
+        }
+    }
+
+    // An unreachable link keeps its declaration and whatever commit it had, so this is a
+    // warning rather than a failure — the same reading `link list` gives a broken link.
+    for outcome in outcomes.iter().filter(|outcome| outcome.is_unavailable()) {
+        if let RefreshOutcome::Unavailable { source, reason } = outcome {
+            let _ = writeln!(err, "warning: {source} could not be refreshed: {reason}");
+        }
+    }
+    ExitClass::Success
 }
 
 /// Runs `nostdb link <ACTION>`.
@@ -312,7 +424,7 @@ pub fn run(
     match action {
         // `list` reports; it does not judge. A broken link is a fact about the workspace,
         // not a failure of the command that listed it.
-        Action::List | Action::Add { .. } | Action::Remove { .. } => {
+        Action::List | Action::Add { .. } | Action::Remove { .. } | Action::Refresh => {
             for warning in federation.warnings() {
                 let _ = writeln!(
                     err,
@@ -363,12 +475,14 @@ mod tests {
     }
 
     #[test]
-    fn refresh_is_refused_for_the_reason_that_is_actually_true() {
-        // Not "the journal is missing": the journal exists and `add` uses it. A local link
-        // is read live, so there is no snapshot for `refresh` to advance.
-        let message = parse(&["refresh"]).unwrap_err();
-        assert!(message.contains("snapshot"), "{message}");
-        assert!(message.contains("GitHub provider"), "{message}");
+    fn refresh_is_an_action_now_and_writes() {
+        // It was refused since Stage 7 because a local link is read live and has no
+        // snapshot to advance. There is a remote source to advance one for now.
+        let (action, rest) = parse(&["refresh", "--project", "/tmp"]).unwrap();
+        assert_eq!(action, Action::Refresh);
+        assert!(action.writes());
+        assert_eq!(rest, ["--project", "/tmp"]);
+        assert!(Action::DEFERRED.is_empty(), "every link action is built");
     }
 
     #[test]
