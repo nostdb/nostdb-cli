@@ -31,6 +31,7 @@ pub mod output;
 pub mod plan;
 pub mod plugin;
 pub mod plugin_install;
+pub mod plugin_run;
 pub mod query;
 pub mod server;
 pub mod sync;

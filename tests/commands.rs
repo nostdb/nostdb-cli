@@ -2139,18 +2139,62 @@ fn plugin_needs_an_action_and_add_needs_a_source() {
 }
 
 #[test]
-fn plugin_list_and_remove_are_refused_by_name_rather_than_as_unknown() {
-    // Somebody who typed a real command deserves to be told it is not built yet, not that it
-    // does not exist. The same treatment `link refresh` got.
-    for action in ["list", "remove"] {
-        let result = nostdb_run(&["plugin", action]);
-        assert_eq!(result.class, ExitClass::Usage, "{action}");
-        assert!(
-            result.err.contains(action) && result.err.contains("executes"),
-            "{action}: {}",
-            result.err
-        );
-    }
+fn plugin_list_reports_nothing_on_stderr_when_nothing_is_installed() {
+    let temporary = TempDir::new("plugin-list-empty");
+    let result = nostdb_run(&[
+        "plugin",
+        "list",
+        "--scope",
+        "project",
+        "--project",
+        &temporary.path().display().to_string(),
+    ]);
+    assert_eq!(result.class, ExitClass::Success);
+    // An empty listing has no data, so a caller piping this receives nothing rather than a
+    // sentence. The explanation goes to stderr.
+    assert!(result.out.is_empty(), "{}", result.out);
+    assert!(
+        result.err.contains("nothing is installed"),
+        "{}",
+        result.err
+    );
+}
+
+#[test]
+fn removing_a_plugin_that_is_not_installed_reports_that_one_is_required() {
+    let temporary = TempDir::new("plugin-remove-absent");
+    let result = nostdb_run(&[
+        "plugin",
+        "remove",
+        "org.example.absent",
+        "--scope",
+        "project",
+        "--project",
+        &temporary.path().display().to_string(),
+    ]);
+    assert_eq!(result.class, ExitClass::Plugin);
+    assert!(result.err.contains("PLUGIN_REQUIRED"), "{}", result.err);
+    assert!(result.err.contains("plugin list"), "{}", result.err);
+}
+
+#[test]
+fn running_a_plugin_that_is_not_installed_reports_that_one_is_required() {
+    let temporary = TempDir::new("plugin-run-absent");
+    let result = nostdb_run(&[
+        "plugin",
+        "run",
+        "org.example.absent",
+        "view",
+        "--scope",
+        "project",
+        "--project",
+        &temporary.path().display().to_string(),
+    ]);
+    assert_eq!(result.class, ExitClass::Plugin);
+    assert!(result.err.contains("PLUGIN_REQUIRED"), "{}", result.err);
+    // The message names what would help. PLUGIN_REQUIRED is the code a caller branches on, and
+    // this is what a person reads.
+    assert!(result.err.contains("plugin add"), "{}", result.err);
 }
 
 #[test]

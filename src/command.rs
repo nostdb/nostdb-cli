@@ -213,8 +213,14 @@ never removes the database or a file this build did not create.
         "plugin" => {
             "\
 nostdb plugin add SOURCE [--scope project|global] [--project PATH]
+nostdb plugin list [--scope project|global] [--project PATH]
+nostdb plugin remove NAME [--scope project|global] [--project PATH]
+nostdb plugin run NAME [ACTION] [--scope project|global] [--project PATH]
 
   add       fetches a plugin, checks it, and records what was approved
+  list      reports what is installed, from the record and not the directories
+  remove    removes an installation and its files
+  run       invokes an action on an installed plugin
 
 SOURCE is a GitHub source:
 
@@ -244,11 +250,33 @@ With no scope, an interactive session in a project is asked and project is
 recommended; a non-interactive one takes project; outside a project it is
 global.
 
-A plugin is not sandboxed. It runs as your user, with your files, and the
-process boundary is the whole of the isolation.
+`run` checks before it starts anything: the plugin is installed, both recorded
+digests still hold over the installed directory, the Engine range still admits
+this build, and the action is one the approved manifest declared. A plugin is
+never launched to be told no.
 
-The provider executable is named by NOSTDB_GITHUB_PROVIDER. A plugin source
-always needs one, because nothing in this command surface reaches GitHub itself.
+Because the tree digest covers the installed directory, a plugin that writes into
+its own directory refuses its next run. Write to the approved output paths, which
+are project-relative and outside it.
+
+The action may be omitted when a plugin declares exactly one. With more than one,
+naming it is required: choosing between two on your behalf would be guessing.
+
+`run` hands over graph data as a read-only artifact the Engine wrote, and only
+when the approval granted `graph_read`. The artifact is removed when the
+invocation ends, including when it failed. A plugin never receives `.nostdb`.
+
+`list` reads the record rather than the plugin directories. A directory somebody
+copied in is not an installation, and that distinction is what the record is for.
+
+A plugin is not sandboxed. It runs as your user, with your files, and the
+process boundary is the whole of the isolation. Every check above is a rule about
+what this command hands over and what it accepts back, not a restraint on what a
+plugin can do once it runs.
+
+The provider executable is named by NOSTDB_GITHUB_PROVIDER. `add` always needs
+one, because nothing in this command surface reaches GitHub itself; `run` does
+not, because a plugin is already on disk by then.
 "
         }
         "apply" => {

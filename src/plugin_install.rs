@@ -135,6 +135,28 @@ impl InstallError {
     }
 }
 
+impl InstallError {
+    /// A digest mismatch found before an invocation rather than during an install.
+    ///
+    /// The installation contract owns the code, so the refusal keeps it rather than being
+    /// relabelled by the component that noticed. `plugin_install_version` section 8 is what says a
+    /// commit yielding different bytes is never written over, and this is the other place that rule
+    /// is applied.
+    #[must_use]
+    pub fn at_run(reason: impl Into<String>) -> Self {
+        Self::new(InstallCode::DigestMismatch, reason)
+    }
+
+    /// An Engine range that no longer admits this build.
+    ///
+    /// Checked again before execution because an Engine can be upgraded after a plugin was
+    /// installed, and the plugin does not learn of it.
+    #[must_use]
+    pub fn incompatible(reason: impl Into<String>) -> Self {
+        Self::new(InstallCode::Incompatible, reason)
+    }
+}
+
 impl std::fmt::Display for InstallError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}: {}", self.code, self.reason)
@@ -542,6 +564,11 @@ impl Record {
     #[must_use]
     pub fn find(&self, name: &str) -> Option<&Installation> {
         self.installed.iter().find(|entry| entry.name == name)
+    }
+
+    /// Removes an installation by name, if it is there.
+    pub fn remove(&mut self, name: &str) {
+        self.installed.retain(|entry| entry.name != name);
     }
 
     /// Adds or replaces an installation, keeping the file canonical.
@@ -1020,6 +1047,38 @@ pub fn read_record(root: &Path, scope: Scope) -> Result<Record, InstallError> {
     }
 }
 
+/// Writes a record for a scope, promoting it into place.
+///
+/// # Errors
+///
+/// Returns an I/O reason. The staged file is removed on failure, so a partial write is never left
+/// where the next read would find it.
+pub fn write_record(record: &Record, root: &Path) -> Result<(), InstallError> {
+    let path = record_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            InstallError::new(
+                InstallCode::RecordInvalid,
+                format!("cannot create {}: {error}", parent.display()),
+            )
+        })?;
+    }
+    let staged = path.with_extension("json.staging");
+    std::fs::write(&staged, record.to_json()).map_err(|error| {
+        InstallError::new(
+            InstallCode::RecordInvalid,
+            format!("cannot write the record: {error}"),
+        )
+    })?;
+    std::fs::rename(&staged, &path).map_err(|error| {
+        let _ = std::fs::remove_file(&staged);
+        InstallError::new(
+            InstallCode::RecordInvalid,
+            format!("cannot promote the record: {error}"),
+        )
+    })
+}
+
 /// Writes the plugin's files and the record.
 ///
 /// # Errors
@@ -1107,14 +1166,7 @@ pub fn commit_install(
         approved_permissions: fetched.permissions.clone(),
     });
 
-    let path = record_path(root);
-    let staged = path.with_extension("json.staging");
-    std::fs::write(&staged, record.to_json()).map_err(|error| io("write the record", &error))?;
-    std::fs::rename(&staged, &path).map_err(|error| {
-        let _ = std::fs::remove_file(&staged);
-        io("promote the record", &error)
-    })?;
-
+    write_record(&record, root)?;
     Ok(outcome)
 }
 
@@ -1138,13 +1190,31 @@ pub enum Action {
         /// The scope, when the invocation named one.
         scope: Option<Scope>,
     },
+    /// Report what is installed.
+    List {
+        /// One scope, or both when none was named.
+        scope: Option<Scope>,
+    },
+    /// Remove an installation and its files.
+    Remove {
+        /// The plugin's name.
+        name: String,
+        /// One scope, or wherever it is found when none was named.
+        scope: Option<Scope>,
+    },
+    /// Invoke an action on an installed plugin.
+    Run {
+        /// The plugin's name.
+        name: String,
+        /// The action to invoke.
+        action: String,
+        /// One scope, or wherever it is found when none was named.
+        scope: Option<Scope>,
+    },
 }
 
 /// The actions this build implements.
-pub const IMPLEMENTED: [&str; 1] = ["add"];
-
-/// The actions the product contract names and this build does not implement.
-const AWAITING_EXECUTION: [&str; 2] = ["list", "remove"];
+pub const IMPLEMENTED: [&str; 4] = ["add", "list", "remove", "run"];
 
 /// Parses `plugin ...`, or reports the usage that was broken.
 ///
@@ -1160,20 +1230,13 @@ pub fn parse(arguments: &[&str]) -> Result<Action, String> {
             "`plugin` needs an action; expected one of {IMPLEMENTED:?}"
         ));
     };
-
-    if AWAITING_EXECUTION.contains(action) {
-        return Err(format!(
-            "`plugin {action}` reads the installation record, and nothing yet executes an \
-             installed plugin, so a record this build can only write has nothing to list against"
-        ));
-    }
-    if *action != "add" {
+    if !IMPLEMENTED.contains(action) {
         return Err(format!(
             "`{action}` is not a plugin action; expected one of {IMPLEMENTED:?}"
         ));
     }
 
-    let mut source: Option<String> = None;
+    let mut operands: Vec<&str> = Vec::new();
     let mut scope: Option<Scope> = None;
     let mut index = 0;
     while index < rest.len() {
@@ -1203,7 +1266,7 @@ pub fn parse(arguments: &[&str]) -> Result<Action, String> {
                     format!("`{value}` is not a scope; expected project or global")
                 })?;
                 if scope.replace(chosen).is_some() {
-                    return Err("`plugin add` takes one scope".to_owned());
+                    return Err(format!("`plugin {action}` takes one scope"));
                 }
             }
             other if other.starts_with('-') => {
@@ -1211,18 +1274,62 @@ pub fn parse(arguments: &[&str]) -> Result<Action, String> {
             }
             other => {
                 index += 1;
-                if source.replace(other.to_owned()).is_some() {
-                    return Err(format!("`plugin add` takes one source, found `{other}`"));
-                }
+                operands.push(other);
             }
         }
     }
 
-    let source = source.ok_or_else(|| {
-        "`plugin add` needs a source: `nostdb plugin add 'https://github.com/owner/repository'`"
-            .to_owned()
-    })?;
-    Ok(Action::Add { source, scope })
+    let one = |what: &str| -> Result<String, String> {
+        match operands.as_slice() {
+            [] => Err(format!(
+                "`plugin {action}` needs {what}: `nostdb plugin {action} {}`",
+                what.to_ascii_uppercase()
+            )),
+            [only] => Ok((*only).to_owned()),
+            [_, extra, ..] => Err(format!(
+                "`plugin {action}` takes one {what}, found `{extra}`"
+            )),
+        }
+    };
+
+    match *action {
+        "add" => Ok(Action::Add {
+            source: one("a source")?,
+            scope,
+        }),
+        "list" => {
+            if let [extra, ..] = operands.as_slice() {
+                return Err(format!("`plugin list` takes no operand, found `{extra}`"));
+            }
+            Ok(Action::List { scope })
+        }
+        "remove" => Ok(Action::Remove {
+            name: one("a name")?,
+            scope,
+        }),
+        // The action defaults to the plugin's only one when it implements exactly one, which the
+        // manager knows from the approved manifest. Naming it is otherwise required: a manager
+        // choosing between two actions on a user's behalf is guessing.
+        "run" => match operands.as_slice() {
+            [] => Err("`plugin run` needs a name: `nostdb plugin run NAME [ACTION]`".to_owned()),
+            [name] => Ok(Action::Run {
+                name: (*name).to_owned(),
+                action: String::new(),
+                scope,
+            }),
+            [name, action] => Ok(Action::Run {
+                name: (*name).to_owned(),
+                action: (*action).to_owned(),
+                scope,
+            }),
+            [_, _, extra, ..] => Err(format!(
+                "`plugin run` takes a name and an action, found `{extra}`"
+            )),
+        },
+        other => Err(format!(
+            "`{other}` is not a plugin action; expected one of {IMPLEMENTED:?}"
+        )),
+    }
 }
 
 /// Where the provider executable is named.
@@ -1287,8 +1394,28 @@ pub fn run(
     out: &mut dyn std::io::Write,
     err: &mut dyn std::io::Write,
 ) -> ExitClass {
-    let Action::Add { source, scope } = action;
+    match action {
+        Action::Add { source, scope } => add(source, *scope, from, interactive, input, out, err),
+        Action::List { scope } => crate::plugin_run::list(*scope, from, out, err),
+        Action::Remove { name, scope } => crate::plugin_run::remove(name, *scope, from, out, err),
+        Action::Run {
+            name,
+            action,
+            scope,
+        } => crate::plugin_run::run(name, action, *scope, from, out, err),
+    }
+}
 
+/// Runs `nostdb plugin add`.
+fn add(
+    source: &str,
+    scope: Option<Scope>,
+    from: &Path,
+    interactive: bool,
+    input: &mut dyn std::io::BufRead,
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+) -> ExitClass {
     let parsed = match PluginSource::parse(source) {
         Ok(parsed) => parsed,
         Err(reason) => {
@@ -1306,7 +1433,7 @@ pub fn run(
     };
 
     let project = nostdb_core::project::Project::is_configured(from).then(|| from.to_owned());
-    let scope = choose_scope(*scope, project.as_deref(), interactive, input, out);
+    let scope = choose_scope(scope, project.as_deref(), interactive, input, out);
     let root = match scope {
         Scope::Project => match &project {
             Some(root) => root.clone(),
