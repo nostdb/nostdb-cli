@@ -40,6 +40,10 @@ fn as_json(report: &PlanReport) -> Value {
     let plan = &report.plan;
     let mut document = json!({
         "plan_version": plan.plan_version,
+        // Stated rather than left to be inferred from a zero estimate. A caller deciding
+        // whether enrichment may start needs to tell "nothing to do" from "refused", and
+        // both produce an estimate of zero.
+        "ai_mode": report.ai_mode.as_str(),
         "source_revision": plan.source_revision,
         "scanned_files": plan.scanned_files,
         "structural_files": plan.structural_files,
