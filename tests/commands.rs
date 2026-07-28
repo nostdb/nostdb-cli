@@ -42,6 +42,11 @@ struct Output {
 }
 
 fn nostdb<const N: usize>(arguments: [&str; N]) -> Output {
+    nostdb_run(&arguments)
+}
+
+/// The same, for a case that builds its arguments rather than writing them out.
+fn nostdb_run(arguments: &[&str]) -> Output {
     let owned: Vec<String> = arguments.iter().map(|a| (*a).to_owned()).collect();
     let mut out = Vec::new();
     let mut err = Vec::new();
@@ -2112,4 +2117,107 @@ fn a_named_database_is_queried_through_the_daemon() {
     let mut catalog = nostdb_server::catalog::Catalog::load(&catalog_path).expect("loaded");
     catalog.remove(&name);
     catalog.store(&catalog_path).expect("cleaned up");
+}
+
+// `nostdb plugin`. The install itself is driven over a scripted provider in
+// tests/plugin_install_flow.rs, because a provider conversation is what an install is made of.
+// What these cases own is the surface: the grammar, the refusals a user meets before anything is
+// fetched, and the two actions this build does not implement.
+
+#[test]
+fn plugin_needs_an_action_and_add_needs_a_source() {
+    for arguments in [vec!["plugin"], vec!["plugin", "add"]] {
+        let result = nostdb_run(&arguments);
+        assert_eq!(result.class, ExitClass::Usage, "{arguments:?}");
+        assert!(result.out.is_empty(), "{arguments:?} wrote to stdout");
+        assert!(
+            result.err.contains("plugin"),
+            "{arguments:?}: {}",
+            result.err
+        );
+    }
+}
+
+#[test]
+fn plugin_list_and_remove_are_refused_by_name_rather_than_as_unknown() {
+    // Somebody who typed a real command deserves to be told it is not built yet, not that it
+    // does not exist. The same treatment `link refresh` got.
+    for action in ["list", "remove"] {
+        let result = nostdb_run(&["plugin", action]);
+        assert_eq!(result.class, ExitClass::Usage, "{action}");
+        assert!(
+            result.err.contains(action) && result.err.contains("executes"),
+            "{action}: {}",
+            result.err
+        );
+    }
+}
+
+#[test]
+fn an_unknown_plugin_action_is_reported_as_unknown() {
+    let result = nostdb_run(&["plugin", "frobnicate"]);
+    assert_eq!(result.class, ExitClass::Usage);
+    assert!(result.err.contains("frobnicate"), "{}", result.err);
+}
+
+#[test]
+fn a_plugin_scope_must_be_project_or_global() {
+    let result = nostdb_run(&[
+        "plugin",
+        "add",
+        "https://github.com/o/r?ref=v1",
+        "--scope",
+        "user",
+    ]);
+    assert_eq!(result.class, ExitClass::Usage);
+    assert!(result.err.contains("project or global"), "{}", result.err);
+}
+
+#[test]
+fn a_plugin_source_that_is_not_github_is_refused_before_anything_is_fetched() {
+    let result = nostdb_run(&["plugin", "add", "https://gitlab.com/o/r"]);
+    assert_eq!(result.class, ExitClass::Validation);
+    assert!(
+        result.err.contains("PLUGIN_SOURCE_INVALID") && result.err.contains("GitHub"),
+        "{}",
+        result.err
+    );
+}
+
+#[test]
+fn a_plugin_source_carrying_a_credential_is_refused_rather_than_stripped() {
+    let result = nostdb_run(&["plugin", "add", "https://github.com/token@o/r?ref=v1"]);
+    assert_eq!(result.class, ExitClass::Validation);
+    assert!(result.err.contains("credential"), "{}", result.err);
+    // And the refusal never echoes what was passed, because a diagnostic is a place a secret
+    // must not reach.
+    assert!(!result.err.contains("token@"), "{}", result.err);
+}
+
+#[test]
+fn a_plugin_source_with_no_ref_is_refused_and_says_what_to_do() {
+    // The manifest contract says a manager resolves a default branch; the provider protocol
+    // forbids a locator without a ref and gives its reason. The conflict is recorded in the root
+    // progress document, and until it is resolved this refuses rather than guessing.
+    let result = nostdb_run(&["plugin", "add", "https://github.com/o/r"]);
+    assert_eq!(result.class, ExitClass::Validation);
+    assert!(
+        result.err.contains("PLUGIN_SOURCE_INVALID") && result.err.contains("ref=<git-ref>"),
+        "{}",
+        result.err
+    );
+}
+
+#[test]
+fn the_plugin_help_topic_states_that_a_plugin_is_not_sandboxed() {
+    let result = nostdb_run(&["help", "plugin"]);
+    assert_eq!(result.class, ExitClass::Success);
+    // The root contract forbids claiming a sandbox that is not implemented. The positive form of
+    // that check is requiring the disclaimer, which is the lesson increment 3 recorded.
+    assert!(result.out.contains("not sandboxed"), "{}", result.out);
+    assert!(
+        result.out.contains("never executes plugin code"),
+        "{}",
+        result.out
+    );
 }

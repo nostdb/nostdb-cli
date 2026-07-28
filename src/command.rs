@@ -48,6 +48,7 @@ Commands:
   build [PATH] [--rebuild] Analyze the project's source and commit what it found
   apply FILE               Apply a change set to the active project
   sync [PATH]              Bring .nostdb and .nost into agreement, or say why not
+  plugin ACTION            Install a plugin from a pinned GitHub source
   catalog ACTION           Register, remove, or list named databases for this user
   server [ACTION]          Run the per-user local daemon, or report on it
   --version [--json]       Report this build and every contract version it supports
@@ -158,6 +159,96 @@ unreachable minute into a rebuild of everything it reached.
 
 The provider executable is named by NOSTDB_GITHUB_PROVIDER, and is started only
 when a remote link needs one.
+"
+        }
+        "query" => {
+            "\
+nostdb query [CYPHER] [--format FORMAT] [--project PATH] [--database @NAME]
+
+With a statement, runs it and reports the result. With none, opens the REPL,
+where a statement may span lines and ends at a `;`, and `:help` lists the
+commands the session itself understands.
+
+The subset is openCypher, and it is explicit: unsupported syntax is reported
+with its source range and never run under a guessed alternative, because a query
+that quietly meant something else is worse than one that refused.
+
+Result order is undefined without ORDER BY, and no output format implies
+otherwise.
+
+  --format table   the default, for a person
+  --format json    one document, data on stdout and diagnostics on stderr
+  --format jsonl   one row per line
+  --format csv     the same rows, with a header
+
+  --database @NAME runs through the per-user daemon against a named database
+
+A path-based query needs no daemon. `--database @NAME` is the only form that
+does, because a name is what the daemon's catalog resolves and a path never
+needed resolving.
+
+A query sees its root database and everything reachable through its declared
+links, and writes affect only the root. Linked data is read-only from the root
+transaction.
+"
+        }
+        "sync" => {
+            "\
+nostdb sync [PATH]
+
+Brings .nostdb and .nost into agreement, in whichever direction changed.
+
+Synchronization compares database generations and content digests, never
+timestamps: `newest wins` decides by a clock that two machines do not share.
+
+If both representations changed from the same baseline, neither is modified and
+SYNC_CONFLICT is reported. There is no option to prefer one, because preferring
+either would discard the other's changes and nothing here can know which of the
+two a person meant to keep.
+
+`nost: false` removes only the generated source it was configured to write. It
+never removes the database or a file this build did not create.
+"
+        }
+        "plugin" => {
+            "\
+nostdb plugin add SOURCE [--scope project|global] [--project PATH]
+
+  add       fetches a plugin, checks it, and records what was approved
+
+SOURCE is a GitHub source:
+
+  https://github.com/OWNER/REPOSITORY[?ref=GIT-REF][#SUBDIRECTORY]
+
+The ref is required. It is resolved once to an immutable commit, and everything
+after that uses the commit, so a plugin does not change underneath a project
+that installed it.
+
+Installation never executes plugin code. It resolves the ref, enumerates the
+tree, refuses a path that escapes or a tree over a fixed limit, reads and
+validates the manifest, checks the manifest's Engine range against this build,
+and only then writes anything. Running a plugin is a separate act.
+
+Two digests are recorded. The manifest digest detects an edited request; the
+tree digest detects edited code behind an unchanged request, which is the more
+dangerous of the two because the plugin's stated intent would look unchanged.
+
+Reinstalling the same commit with different bytes is refused rather than
+written over: a commit is immutable, so different bytes mean something between
+the host and this machine is not what it was. No option installs over that.
+
+  --scope project    installs into the project, and takes precedence over global
+  --scope global     installs into ~/.nostdb/plugins for every project
+
+With no scope, an interactive session in a project is asked and project is
+recommended; a non-interactive one takes project; outside a project it is
+global.
+
+A plugin is not sandboxed. It runs as your user, with your files, and the
+process boundary is the whole of the isolation.
+
+The provider executable is named by NOSTDB_GITHUB_PROVIDER. A plugin source
+always needs one, because nothing in this command surface reaches GitHub itself.
 "
         }
         "apply" => {
@@ -696,11 +787,21 @@ mod tests {
         )
     }
 
+    /// Every command the parser accepts.
+    ///
+    /// Stated once and used by both checks below. Each of them used to carry its own list of
+    /// six, written when the surface had six commands and never extended: a test named
+    /// `every_command` that covered under half of them read as coverage it did not have.
+    const EVERY_COMMAND: [&str; 14] = [
+        "help", "init", "check", "convert", "export", "query", "link", "plan", "build", "apply",
+        "sync", "plugin", "catalog", "server",
+    ];
+
     #[test]
     fn the_summary_lists_every_command_the_parser_accepts() {
         let (text, _, class) = rendered(None);
         assert_eq!(class, ExitClass::Success);
-        for command in ["help", "init", "check", "convert", "export", "--version"] {
+        for command in EVERY_COMMAND.iter().chain(["--version"].iter()) {
             assert!(text.contains(command), "the summary omits {command}");
         }
     }
@@ -709,7 +810,7 @@ mod tests {
     fn every_command_has_a_help_topic() {
         // A command the summary advertises and help cannot describe is a gap a reader
         // finds before a maintainer does.
-        for command in ["help", "init", "check", "convert", "export", "version"] {
+        for command in EVERY_COMMAND.iter().chain(["version"].iter()) {
             let (text, _, class) = rendered(Some(command));
             assert_eq!(class, ExitClass::Success, "{command}");
             assert!(!text.is_empty(), "{command} has no help text");

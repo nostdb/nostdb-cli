@@ -30,6 +30,7 @@ pub mod link;
 pub mod output;
 pub mod plan;
 pub mod plugin;
+pub mod plugin_install;
 pub mod query;
 pub mod server;
 pub mod sync;
@@ -143,6 +144,13 @@ pub enum Invocation {
     },
     /// `nostdb sync [PATH]`
     Sync {
+        /// Where to start looking for the active project.
+        from: PathBuf,
+    },
+    /// `nostdb plugin add SOURCE [--project|--global] [--project PATH]`
+    Plugin {
+        /// What to do to the installed plugins.
+        action: crate::plugin_install::Action,
         /// Where to start looking for the active project.
         from: PathBuf,
     },
@@ -279,6 +287,7 @@ impl Invocation {
                 Ok(Self::Export { from })
             }
             "link" => parse_link(&remainder),
+            "plugin" => parse_plugin(&remainder),
             "apply" => {
                 let Some((first, rest)) = remainder.split_first() else {
                     return Err(usage("`apply` needs a change set file"));
@@ -361,6 +370,15 @@ impl Invocation {
             }
             Self::Server { action } => server::execute(action, out, err),
             Self::Sync { from } => sync::run(&from, out, err),
+            Self::Plugin { action, from } => {
+                // Whether anybody can answer the scope question is decided here, where the
+                // process streams are, and passed in as a fact. Everything below stays drivable
+                // by a test that supplies the answer itself.
+                let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
+                let stdin = std::io::stdin();
+                let mut input = stdin.lock();
+                plugin_install::run(&action, &from, interactive, &mut input, out, err)
+            }
             Self::Query {
                 cypher,
                 format,
@@ -404,6 +422,46 @@ fn parse_link(remainder: &[&str]) -> Result<Invocation, UsageError> {
         format,
         from,
     })
+}
+
+/// Parses `plugin`'s operands.
+///
+/// The action grammar lives in [`plugin_install::parse`], beside the actions themselves, for the
+/// reason `link`'s does: adding one should not mean editing two files. `--project` is separated
+/// out first, because it means the same thing here as everywhere else on the surface — where to
+/// look for the project — and the scope is a different question, asked as `--scope`.
+fn parse_plugin(remainder: &[&str]) -> Result<Invocation, UsageError> {
+    let mut operands: Vec<&str> = Vec::new();
+    let mut from = PathBuf::from(".");
+    let mut index = 0;
+    while index < remainder.len() {
+        let argument = remainder[index];
+        let (name, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(name, value)| (name, Some(value)));
+        if name == "--project" {
+            let value = match inline {
+                Some(value) => {
+                    index += 1;
+                    value
+                }
+                None => {
+                    let Some(value) = remainder.get(index + 1) else {
+                        return Err(usage("`--project` needs a value"));
+                    };
+                    index += 2;
+                    value
+                }
+            };
+            from = PathBuf::from(value);
+            continue;
+        }
+        operands.push(argument);
+        index += 1;
+    }
+
+    let action = plugin_install::parse(&operands).map_err(usage)?;
+    Ok(Invocation::Plugin { action, from })
 }
 
 /// Parses the `--format` and `--project` options both `link` and `query` accept.
