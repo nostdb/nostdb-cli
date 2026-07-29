@@ -10,14 +10,21 @@
 # repository stays `nostdb-cli`, because the repository is the boundary and the package is what cargo
 # resolves; they are allowed to differ and here they have to.
 name = "nostdb"
-# 0.1.1 releases a change to what a build produces: `Directory` nodes, a `precision` property,
-# and `GRAPH_SCHEMA_VERSION` 1 to 2, which makes the first build after it redraw the graph it holds.
+# 0.1.2 carries six Stages: the Kotlin analyzer, the bundled GitHub provider, the plugin index, Spring
+# route extraction, `CYPHER_UNKNOWN_LABEL`, and the pin and diagnostic corrections around them.
 #
-# A patch number understates that, and it is deliberate. The old output was a defect against
-# `docs/PRD.md` section 17.3 rather than a design anybody chose — a repository in a language with no
-# analyzer was absent from its own graph — so what shipped in 0.1.0 was never the contract. The
-# rebuild is the cost of correcting it, and it is recorded here rather than left to be discovered.
-version = "0.1.1"
+# A patch number understates this by more than 0.1.1's did, and that was said before it was chosen. Two
+# things it understates:
+#
+# - `plugin_install_version` went 1 to 2, so a plugin **record** written by an older build is refused
+#   rather than read. Nothing has such a record — no published build could install a plugin, because the
+#   provider was never bundled until now — which makes the cost zero in practice and does not make the
+#   break smaller;
+# - `GRAPH_SCHEMA_VERSION` went 2 to 4, so the first build after this redraws the graph it holds.
+#
+# Recorded here because a version is what an implementation reports it can do, and somebody reading
+# `~0.1.1` in a lock file deserves to find out from this file rather than from a refused record.
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
 license = "SSPL-1.0"
