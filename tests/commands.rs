@@ -1672,29 +1672,37 @@ fn a_build_that_analyzed_nothing_names_the_languages_on_both_sides() {
     // language it analyzes, which leaves a reader to work out whether they excluded their own
     // sources by mistake or whether the language has no analyzer yet. Those have opposite fixes,
     // so the note has to name what it analyzes and what it found.
+    // Ruby, because Kotlin gained an analyzer. Written with a Kotlin file, this now passes only if
+    // the language really has none — and leaving it on Kotlin would have asserted the note for a
+    // file that is read, which is the opposite of what it is for.
     let dir = TempDir::new("build-unsupported-language");
     let root = dir.path().to_string_lossy().into_owned();
     nostdb(["init", &root]);
-    fs::write(dir.join("Server.kt"), "class Server(val port: Int)\n").unwrap();
+    fs::write(dir.join("server.rb"), "class Server\nend\n").unwrap();
 
     let built = nostdb(["build", "--format", "json", "--project", &root]);
     // Not a failure: a project with nothing this build reads is a fact about the project.
     assert_eq!(built.class, ExitClass::Success, "{}", built.err);
     let document: serde_json::Value = serde_json::from_str(&built.out).unwrap();
-    assert_eq!(document["analyzed_files"], 0, "no analyzer covers Kotlin");
+    assert_eq!(document["analyzed_files"], 0, "no analyzer covers Ruby");
     // The file is still in the graph. This assertion used to require the opposite, which is the
     // behaviour section 17.3 forbids: an unsupported language produces a source record at minimum.
     assert_eq!(document["recorded_files"], 1);
     // The file, and the directory it sits in.
     assert_eq!(document["records"]["nodes_created"], 2);
 
+    // Every language this build analyzes, not one of them. The assertion named `rust` alone and went
+    // stale the moment a second analyzer arrived — it failed on a note that had become *more* correct.
+    // A third analyzer belongs in this list.
+    for analyzed in ["kotlin", "rust"] {
+        assert!(
+            built.err.contains(analyzed),
+            "the note has to name {analyzed}, which this build analyzes: {}",
+            built.err
+        );
+    }
     assert!(
-        built.err.contains("it analyzes rust"),
-        "the note has to name what this build does analyze: {}",
-        built.err
-    );
-    assert!(
-        built.err.contains("this project is kotlin"),
+        built.err.contains("this project is ruby"),
         "and what it found, which is the half that says why nothing was read: {}",
         built.err
     );

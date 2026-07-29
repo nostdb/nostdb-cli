@@ -73,7 +73,7 @@ missing_panics_doc = "deny"
 [dependencies]
 serde_json = "1"
 nostdb-server = { git = "https://github.com/nostdb/nostdb-server.git", rev = "29c55167ec619af53512c93daf84b77f2e0334ef" }
-nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "775c7946684c996e5b468175957bebdbb77b980a" }
+nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "87b50923b7dce3491feb88c7486219dfa08c2d5d" }
 
 [dev-dependencies]
 serde_json = "1"
