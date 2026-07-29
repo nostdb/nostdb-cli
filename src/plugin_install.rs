@@ -947,6 +947,12 @@ pub struct Fetched {
     pub tree_digest: String,
     /// Every accepted entry, keyed by its path within the plugin.
     pub files: Vec<(String, Vec<u8>)>,
+    /// The entrypoint the manifest declares, as the first word of its command.
+    ///
+    /// Carried so installation can make exactly that file startable. A plugin is executed out of process
+    /// by path, so a file written without an executable bit is a plugin nothing can start — and the
+    /// failure arrives at `view` rather than at `add`, long after the thing that caused it.
+    pub entrypoint: Option<String>,
     /// The directory the index resolved the source to, when it was not the repository root.
     ///
     /// The **resolved directory**, not the name the caller wrote. The record says where a plugin came
@@ -1086,6 +1092,13 @@ pub fn fetch<T: Transport>(
         manifest_digest: digest_bytes(&manifest_bytes).to_string(),
         tree_digest: tree_digest(&files),
         files,
+        // The manifest declares an argument vector, and its first word is the program. Read here rather
+        // than in the installer, because this is where the validated manifest is.
+        entrypoint: manifest["entrypoint"]["command"]
+            .as_array()
+            .and_then(|command| command.first())
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
         directory: resolved,
     })
 }
@@ -1301,6 +1314,33 @@ pub fn commit_install(
             std::fs::create_dir_all(parent).map_err(|error| io("create a directory", &error))?;
         }
         std::fs::write(&target, bytes).map_err(|error| io("write a plugin file", &error))?;
+        // The declared entrypoint, and only it.
+        //
+        // Not every file, and not a mode the source supplied. A remote tree saying a file is executable
+        // is not a reason to make it so — installation must produce a plugin that can start, which is one
+        // file, and marking the rest would be widening what a plugin can do because its author said to.
+        #[cfg(unix)]
+        if fetched.entrypoint.as_deref() == Some(path.as_str()) {
+            use std::os::unix::fs::PermissionsExt;
+            let mut mode = std::fs::metadata(&target)
+                .map_err(|error| io("read a plugin file's mode", &error))?
+                .permissions();
+            mode.set_mode(0o755);
+            std::fs::set_permissions(&target, mode)
+                .map_err(|error| io("make the entrypoint startable", &error))?;
+        }
+    }
+    // An entrypoint the tree does not hold is refused here rather than at the first action that needs
+    // it. `add` is where somebody is watching, and `PLUGIN_FAILED` three commands later names the symptom
+    // instead of the cause.
+    if let Some(entrypoint) = fetched.entrypoint.as_deref()
+        && !fetched.files.iter().any(|(path, _)| path == entrypoint)
+    {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(InstallError::new(
+            InstallCode::SourceInvalid,
+            format!("the manifest names `{entrypoint}` and the plugin does not contain it"),
+        ));
     }
 
     // Promoted only once every file is written, so an interrupted install leaves the previous

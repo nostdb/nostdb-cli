@@ -491,6 +491,88 @@ fn a_named_plugin_records_its_directory_and_installs_only_it() {
 }
 
 #[test]
+fn the_declared_entrypoint_is_written_startable_and_nothing_else_is() {
+    // Found by verifying a release rather than by this suite: `plugin add` reported success and
+    // `nostdb view` then failed with `PLUGIN_FAILED: ... Permission denied`. A plugin is executed out of
+    // process by path, so a file written without an executable bit is a plugin nothing can start — and
+    // the failure arrived three commands after the thing that caused it.
+    //
+    // The archive assembler has checked its own executable bit since the first release. Installation had
+    // no equivalent check, which is the same defect in the other half of the same journey.
+    let scratch = Scratch::new("entrypoint-mode");
+    let (replies, content) = conversation(">=0.1.0 <0.2.0", b"#!/bin/sh\nexit 0\n");
+    let mut client = scripted_client(replies, content);
+    let source = source("https://github.com/example/viewer?ref=v1.0.0");
+    let fetched = fetch(&mut client, &source, &engine()).expect("installable");
+    assert_eq!(
+        fetched.entrypoint.as_deref(),
+        Some("bin/viewer"),
+        "the manifest's command is carried to the installer"
+    );
+
+    commit_install(&fetched, &source, scratch.path(), Scope::Project).expect("written");
+    let directory = scratch.path().join(".nostdb/plugins/org.example.viewer");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |relative: &str| {
+            std::fs::metadata(directory.join(relative))
+                .expect(relative)
+                .permissions()
+                .mode()
+                & 0o111
+        };
+        assert_ne!(mode("bin/viewer"), 0, "the entrypoint can be started");
+        // And only it. A remote tree saying a file is executable is not a reason to make it so.
+        assert_eq!(
+            mode("nostdb-plugin.json"),
+            0,
+            "a manifest is not a program, and installation does not widen what a plugin can do"
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
+}
+
+#[test]
+fn a_manifest_naming_an_entrypoint_the_plugin_lacks_is_refused_at_add() {
+    // Refused where somebody is watching. `PLUGIN_FAILED` at the first action that needs it names the
+    // symptom instead of the cause.
+    let manifest = manifest(">=0.1.0 <0.2.0").replace("bin/viewer", "bin/absent");
+    let manifest_bytes = manifest.into_bytes();
+    let index_bytes = index(&[("viewer", ".")]).into_bytes();
+    let tool = b"#!/bin/sh\nexit 0\n";
+    let replies = vec![
+        handshake(),
+        resolve(),
+        enumerate(&[
+            ("nostdb.plugins.json", index_bytes.len()),
+            ("nostdb-plugin.json", manifest_bytes.len()),
+            ("bin/viewer", tool.len()),
+        ]),
+        read(index_bytes.len()),
+        read(manifest_bytes.len()),
+        read(tool.len()),
+    ];
+    let scratch = Scratch::new("entrypoint-absent");
+    let mut client = scripted_client(replies, vec![index_bytes, manifest_bytes, tool.to_vec()]);
+    let source = source("https://github.com/example/viewer?ref=v1.0.0");
+    let fetched = fetch(&mut client, &source, &engine()).expect("the tree is fine");
+
+    let error =
+        commit_install(&fetched, &source, scratch.path(), Scope::Project).expect_err("refused");
+    assert!(error.to_string().contains("bin/absent"), "{error}");
+    // And nothing was left behind for something later to find and take for an installation.
+    assert!(
+        !scratch
+            .path()
+            .join(".nostdb/plugins/org.example.viewer")
+            .exists()
+    );
+}
+
+#[test]
 fn a_provider_that_cannot_reach_the_host_is_reported_as_unavailable() {
     let refused = vec![
         handshake(),
