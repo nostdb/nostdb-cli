@@ -72,7 +72,7 @@ missing_panics_doc = "deny"
 #                License: SSPL-1.0.
 [dependencies]
 serde_json = "1"
-nostdb-server = { git = "https://github.com/nostdb/nostdb-server.git", rev = "29c55167ec619af53512c93daf84b77f2e0334ef" }
+nostdb-server = { git = "https://github.com/nostdb/nostdb-server.git", rev = "08c2b7657079f07cc333573ecfe6562bdae0cdd1" }
 nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "87b50923b7dce3491feb88c7486219dfa08c2d5d" }
 
 [dev-dependencies]
