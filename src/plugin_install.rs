@@ -30,7 +30,16 @@ use std::path::{Path, PathBuf};
 pub const MANIFEST_NAME: &str = "nostdb-plugin.json";
 
 /// The record versions this build reads.
-pub const SUPPORTED_RECORD_VERSIONS: [u64; 1] = [1];
+pub const SUPPORTED_RECORD_VERSIONS: [u64; 1] = [2];
+
+// Not `[2, 1]`. A version-1 record was written when a plugin was recognised by path, and its
+// `subdirectory` was the fragment a caller typed rather than a directory an index resolved. Reading it
+// as version 2 would take that string for a resolved directory and be wrong about where the plugin came
+// from, which is the one thing the record exists to say.
+//
+// No such record exists in practice: no published build could install a plugin at all, because the
+// GitHub provider was never bundled in a release. If one does, it is refused by name — `PLUGIN_RECORD_
+// VERSION_UNSUPPORTED` — rather than misread.
 
 /// Entries in one plugin.
 pub const MAX_ENTRIES: usize = 4096;
@@ -2095,7 +2104,7 @@ mod tests {
     #[test]
     fn a_record_reports_every_problem_rather_than_the_first() {
         let text = serde_json::json!({
-            "plugin_install_version": 1,
+            "plugin_install_version": 2,
             "installed": [{
                 "name": "org.example.viewer",
                 "repository": "https://github.com/example/viewer",
@@ -2116,7 +2125,10 @@ mod tests {
 
     #[test]
     fn an_unsupported_record_version_is_reported_alone() {
-        let text = r#"{"plugin_install_version": 2, "installed": []}"#;
+        // 3 rather than 2. This said 2, which the bump made *supported*, so the test would have
+        // asserted an unsupported version against a version this build reads — and the same slip in the
+        // spec's fixture set is what `version_unsupported` turned out to be.
+        let text = r#"{"plugin_install_version": 3, "installed": []}"#;
         let (code, problems) = Record::parse(text, Scope::Project).expect_err("refused");
         assert_eq!(code, InstallCode::RecordVersionUnsupported);
         assert_eq!(problems.len(), 1);
@@ -2125,7 +2137,7 @@ mod tests {
     #[test]
     fn a_record_claiming_the_other_scope_is_refused() {
         let text = serde_json::json!({
-            "plugin_install_version": 1,
+            "plugin_install_version": 2,
             "installed": [{
                 "name": "org.example.viewer",
                 "repository": "https://github.com/example/viewer",
