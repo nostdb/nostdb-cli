@@ -1369,7 +1369,7 @@ fn plan_reports_what_a_build_would_do_and_accounts_for_every_file() {
     nostdb(["init", &root]);
     fs::write(dir.join(".gitignore"), "*.log\n").unwrap();
     fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
-    fs::write(dir.join("app.py"), "def main(): pass\n").unwrap();
+    fs::write(dir.join("notes.md"), "# Notes\n\nSome prose.\n").unwrap();
     fs::write(dir.join("debug.log"), "noise\n").unwrap();
     fs::write(dir.join(".env"), "SECRET=1\n").unwrap();
 
@@ -1378,8 +1378,11 @@ fn plan_reports_what_a_build_would_do_and_accounts_for_every_file() {
     let document: serde_json::Value = serde_json::from_str(&result.out).unwrap();
 
     assert_eq!(document["plan_version"], 1);
-    // `main.rs`, `app.py`, and `.gitignore` — the last named `unknown`, because what a file is
+    // `main.rs`, `notes.md`, and `.gitignore` — the last named `unknown`, because what a file is
     // called does not decide whether it is in the repository.
+    //
+    // Markdown, not Python. This fixture named a `.py` file until Python gained an analyzer, and then
+    // asserted the reverse of what it was written for. A prose format is the durable choice.
     assert_eq!(document["scanned_files"], 3, "{}", result.out);
     assert_eq!(
         document["structural_files"], 1,
@@ -1388,7 +1391,7 @@ fn plan_reports_what_a_build_would_do_and_accounts_for_every_file() {
     );
     assert_eq!(
         document["unsupported_files"], 2,
-        "the Python file is not, nor is `.gitignore`, and both stay eligible for AI instead"
+        "the Markdown file is not, nor is `.gitignore`, and both stay eligible for AI instead"
     );
     assert_eq!(
         document["semantic_candidates"], 2,
@@ -1410,7 +1413,7 @@ fn plan_reports_what_a_build_would_do_and_accounts_for_every_file() {
     assert_eq!(
         languages,
         [
-            ("python", "unsupported"),
+            ("markdown", "unsupported"),
             ("rust", "deterministic syntactic"),
             ("unknown", "unsupported"),
         ],
@@ -1461,7 +1464,7 @@ fn plan_with_ai_off_spends_nothing_and_says_so_on_stderr() {
         "{\"settings_version\": 1, \"analysis\": {\"ai_mode\": \"off\"}}",
     )
     .unwrap();
-    fs::write(dir.join("app.py"), "def main(): pass\n").unwrap();
+    fs::write(dir.join("notes.md"), "# Notes\n\nSome prose.\n").unwrap();
 
     let result = nostdb(["plan", "--format", "json", "--project", &root]);
     assert_eq!(result.class, ExitClass::Success, "{}", result.err);
@@ -1486,7 +1489,7 @@ fn plan_exits_eight_when_the_estimate_would_cross_a_configured_limit() {
         "{\"settings_version\": 1, \"analysis\": {\"max_input_tokens\": 10}}",
     )
     .unwrap();
-    fs::write(dir.join("app.py"), "def main(): pass\n".repeat(200)).unwrap();
+    fs::write(dir.join("notes.md"), "# Notes\n\nSome prose.\n".repeat(200)).unwrap();
 
     let result = nostdb(["plan", "--project", &root]);
     assert_eq!(result.class, ExitClass::AiBudget, "{}", result.err);
@@ -1503,12 +1506,12 @@ fn plan_writes_the_report_to_stdout_and_every_note_to_stderr() {
     let dir = TempDir::new("plan-streams");
     let root = dir.path().to_string_lossy().into_owned();
     nostdb(["init", &root]);
-    fs::write(dir.join("app.py"), "def main(): pass\n").unwrap();
+    fs::write(dir.join("notes.md"), "# Notes\n\nSome prose.\n").unwrap();
 
     let result = nostdb(["plan", "--project", &root]);
     assert_eq!(result.class, ExitClass::Success, "{}", result.err);
     assert!(result.out.contains("revision"), "{}", result.out);
-    assert!(result.out.contains("python"), "{}", result.out);
+    assert!(result.out.contains("markdown"), "{}", result.out);
     // No limit is configured, so the contract requires asking before enrichment. The note
     // saying so is commentary and must not reach the data stream.
     assert!(result.err.contains("no token limit"), "{}", result.err);

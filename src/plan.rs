@@ -225,6 +225,9 @@ mod tests {
             "structural extraction of supported source spends no AI tokens, and the plan \
              has to be able to say so"
         );
-        assert!(!registry().precision("python").is_deterministic());
+        // Markdown, deliberately. This used to name Python, and Python gained an analyzer — which made the
+        // assertion the opposite of what it was written for while the line above it kept passing. A prose
+        // format is the durable choice: no structural analyzer is ever coming for it.
+        assert!(!registry().precision("markdown").is_deterministic());
     }
 }
