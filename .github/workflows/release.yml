@@ -89,15 +89,25 @@ jobs:
       - name: Refuse a version the crate does not carry
         shell: bash
         run: |
-          # The version in the input, the crate, and the launcher must be one version. A release whose
-          # archive names disagreed with what the binary reports would fail the assembler's attestation
-          # later, and finding that out after six builds is finding it out too late.
+          # The input and the crate must be one version. A release whose archive names disagreed with
+          # what the binary reports would fail the assembler's attestation later, and finding that out
+          # after six builds is finding it out too late.
+          #
+          # The launcher's own version is deliberately **not** checked here, and dropping it is a fix.
+          # It made every release after the first impossible: this gate wanted the launcher at the new
+          # version before building, and `nostdb-distribution`'s verifier requires its `package.json`
+          # to match the `checksums.json` it ships — which cannot exist until these builds have run.
+          # For 0.1.0 the two agreed for free, because 0.1.0 was where the launcher started, so the
+          # cycle first appeared on the second release.
+          #
+          # Nothing is lost. The launcher's version decides which archive names it looks *up*, and that
+          # it looks up names the release actually wrote is exactly what its own verifier enforces by
+          # requiring `package.json` and `checksums.json` to agree. Checking it here as well added no
+          # guarantee and made the process circular.
           crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          launcher=$(node -e 'console.log(require("./.distribution/package.json").version)')
           asked='${{ inputs.version }}'
-          echo "asked $asked, crate $crate, launcher $launcher"
+          echo "asked $asked, crate $crate"
           [ "$asked" = "$crate" ] || { echo "the crate is $crate" >&2; exit 1; }
-          [ "$asked" = "$launcher" ] || { echo "the launcher is $launcher" >&2; exit 1; }
 
       - name: Install the cross linker
         if: matrix.apt != ''
