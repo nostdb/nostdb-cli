@@ -1663,6 +1663,37 @@ fn build_outside_a_project_is_a_usage_mistake_and_writes_nothing_to_stdout() {
 }
 
 #[test]
+fn a_build_that_analyzed_nothing_names_the_languages_on_both_sides() {
+    // Reported: a Kotlin repository built to `0 nodes, 0 edges` and was read as a build failure.
+    // It was not — this build ships one analyzer — but the note said only that no file had a
+    // language it analyzes, which leaves a reader to work out whether they excluded their own
+    // sources by mistake or whether the language has no analyzer yet. Those have opposite fixes,
+    // so the note has to name what it analyzes and what it found.
+    let dir = TempDir::new("build-unsupported-language");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("Server.kt"), "class Server(val port: Int)\n").unwrap();
+
+    let built = nostdb(["build", "--format", "json", "--project", &root]);
+    // Not a failure: a project with nothing this build reads is a fact about the project.
+    assert_eq!(built.class, ExitClass::Success, "{}", built.err);
+    let document: serde_json::Value = serde_json::from_str(&built.out).unwrap();
+    assert_eq!(document["analyzed_files"], 0);
+    assert_eq!(document["records"]["nodes_created"], 0);
+
+    assert!(
+        built.err.contains("it analyzes rust"),
+        "the note has to name what this build does analyze: {}",
+        built.err
+    );
+    assert!(
+        built.err.contains("this project is kotlin"),
+        "and what it found, which is the half that says why the count is zero: {}",
+        built.err
+    );
+}
+
+#[test]
 fn a_build_and_a_plan_agree_about_which_files_they_cover() {
     // They share one registry. A language `plan` calls unsupported and `build` analyzes
     // would make the two disagree about the same file.

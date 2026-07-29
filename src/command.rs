@@ -938,7 +938,9 @@ mod tests {
     #[test]
     fn every_advertised_path_argument_is_accepted() {
         let (summary, _, _) = rendered(None);
-        let advertised: Vec<String> = summary
+        // The command, and whether its own help line offers `--format` — so the orders tried below
+        // are the ones this command advertises rather than a guess about which flags it takes.
+        let advertised: Vec<(String, bool)> = summary
             .lines()
             .filter_map(|line| {
                 let line = line.trim();
@@ -949,7 +951,14 @@ mod tests {
                 command
                     .chars()
                     .all(|c| c.is_ascii_lowercase())
-                    .then(|| command.to_owned())
+                    // The flag is read from the command's own help rather than from the summary
+                    // line, which is deliberately short and names `--format` for none of them.
+                    // Reading the summary here made this check cover nothing while looking like
+                    // it covered both orders.
+                    .then(|| {
+                        let (topic, _, _) = rendered(Some(command));
+                        (command.to_owned(), topic.contains("--format"))
+                    })
             })
             .collect();
         assert!(
@@ -957,19 +966,42 @@ mod tests {
             "the summary advertises no [PATH] argument, so this proves nothing"
         );
 
-        for command in &advertised {
-            let arguments = vec![command.clone(), ".".to_owned()];
-            match crate::Invocation::parse(&arguments) {
-                Ok(_) => {}
-                Err(error) => panic!(
-                    "the summary advertises `{command} [PATH]` and the parser refuses it: {error}"
-                ),
+        // Both orders, because the first version of this check tried the path first only. That
+        // passed while `plan --format json .` was refused, which is the spelling the Skill
+        // documents for enrichment. A help line reading `plan [PATH] [--format FORMAT]` does not
+        // tell a reader the order is load-bearing, and `query` documents that it is not.
+        for (command, takes_format) in &advertised {
+            let mut orders = vec![vec![command.clone(), ".".to_owned()]];
+            if *takes_format {
+                orders.push(vec![
+                    command.clone(),
+                    "--format".to_owned(),
+                    "json".to_owned(),
+                    ".".to_owned(),
+                ]);
+            }
+            for arguments in orders {
+                let spelling = arguments.join(" ");
+                match crate::Invocation::parse(&arguments) {
+                    Ok(_) => {}
+                    Err(error) => panic!(
+                        "the summary advertises `{command} [PATH]` and the parser refuses \
+                         `{spelling}`: {error}"
+                    ),
+                }
             }
         }
         // Named so a reader can see which commands the check covered rather than trusting a count.
+        let covered: Vec<String> = advertised
+            .iter()
+            .map(|(command, takes_format)| match takes_format {
+                true => format!("{command} (both orders)"),
+                false => command.clone(),
+            })
+            .collect();
         println!(
             "advertised [PATH] arguments accepted: {}",
-            advertised.join(", ")
+            covered.join(", ")
         );
     }
 

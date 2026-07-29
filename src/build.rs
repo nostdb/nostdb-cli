@@ -139,6 +139,39 @@ pub fn run(
             err,
             "note: no file has a language this build analyzes, so nothing was committed"
         );
+        // Which languages, on both sides.
+        //
+        // Reported because the note above is true and unactionable on its own. A reader is left
+        // to work out whether they excluded their own sources by mistake or whether the language
+        // simply has no analyzer yet, and those have opposite fixes: one is a settings change and
+        // the other is waiting for a release. A Kotlin repository reporting `0 nodes` was read as
+        // a build failure, which is the reasonable reading of a report that says a language was
+        // not analyzed without saying which ones are.
+        let registry = crate::plan::registry();
+        let analyzes = match registry.languages().join(", ") {
+            empty if empty.is_empty() => "no language".to_owned(),
+            named => named,
+        };
+        let found: Vec<&str> = report
+            .plan
+            .languages
+            .iter()
+            .map(|summary| summary.language.as_str())
+            .collect();
+        match found.is_empty() {
+            // Every file was skipped before classification, so naming what was found would name
+            // nothing. The skip reasons below are the answer in that case.
+            true => {
+                let _ = writeln!(err, "note: it analyzes {analyzes}");
+            }
+            false => {
+                let _ = writeln!(
+                    err,
+                    "note: it analyzes {analyzes}; this project is {}",
+                    found.join(", ")
+                );
+            }
+        }
     }
     for (reason, count) in &report.plan.skipped {
         let _ = writeln!(err, "note: {count} file(s) skipped: {reason}");

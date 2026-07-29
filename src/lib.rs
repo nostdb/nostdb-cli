@@ -518,17 +518,50 @@ fn parse_plugin(remainder: &[&str]) -> Result<Invocation, UsageError> {
 ///
 /// Returns a usage error when a path is given twice — once positionally and once with `--project`.
 /// Choosing one of the two silently is how a caller ends up analyzing a directory they did not name.
+///
+/// # The path is found wherever it is, not only first
+///
+/// This used to look at the first word only, so `nostdb plan --format json .` refused the `.` while
+/// `nostdb plan . --format json` accepted it. `query` documents the opposite rule three functions
+/// down — options may come before or after its statement, because someone reaching for `--format`
+/// after typing a long one should not have to move it — so the surface disagreed with itself about
+/// argument order, and the spelling that failed is the one the Skill documents for enrichment.
+///
+/// `--format` and `--project` take a value, and that value is the one non-flag word that is not a
+/// path. Consuming it with its flag is what keeps `--format json` from reading `json` as the project.
 fn split_project_path<'a>(
     remainder: &[&'a str],
     command: &str,
 ) -> Result<(Option<PathBuf>, Vec<&'a str>), UsageError> {
-    let Some((first, rest)) = remainder.split_first() else {
-        return Ok((None, Vec::new()));
-    };
-    if first.starts_with('-') {
-        return Ok((None, remainder.to_vec()));
+    let mut path: Option<&'a str> = None;
+    let mut options: Vec<&'a str> = Vec::new();
+    let mut index = 0;
+    while index < remainder.len() {
+        let word = remainder[index];
+        if word.starts_with('-') {
+            options.push(word);
+            index += 1;
+            // A missing value is left to `parse_shared_options`, which owns that message.
+            if matches!(word, "--format" | "--project") {
+                if let Some(value) = remainder.get(index) {
+                    options.push(value);
+                    index += 1;
+                }
+            }
+            continue;
+        }
+        if let Some(first) = path {
+            return Err(usage(format!(
+                "`{command}` was given a path twice, as `{first}` and as `{word}`"
+            )));
+        }
+        path = Some(word);
+        index += 1;
     }
-    if rest
+    let Some(first) = path else {
+        return Ok((None, options));
+    };
+    if options
         .iter()
         .any(|word| *word == "--project" || word.starts_with("--project="))
     {
@@ -536,7 +569,7 @@ fn split_project_path<'a>(
             "`{command}` was given a path twice, as `{first}` and with `--project`"
         )));
     }
-    Ok((Some(positional(first, "a project path")?), rest.to_vec()))
+    Ok((Some(positional(first, "a project path")?), options))
 }
 
 fn parse_shared_options(
