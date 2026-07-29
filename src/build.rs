@@ -39,6 +39,7 @@ fn as_json(report: &BuildReport) -> Value {
         "analyzed_files": report.analyzed_files,
         "recorded_files": report.recorded_files,
         "endpoints": report.endpoints,
+        "replaced_schemas": report.replaced_schemas,
         "frameworks": report.frameworks,
         "uninterpreted_annotations": report.uninterpreted_annotations,
         "reused_files": report.reused_files,
@@ -198,6 +199,15 @@ pub fn run(
     // The capability diagnostic, per section 17.3. Named annotations rather than a framework, because a
     // framework this build cannot read is one it cannot name — and these are what a caller sends to a
     // model when they want the facts anyway.
+    // A schema somebody wrote by hand and this build replaced. Reported because the schemas the Engine
+    // declares are unowned, so a replacement is real and this is what keeps it from being silent.
+    if !report.replaced_schemas.is_empty() {
+        let _ = writeln!(
+            err,
+            "note: replaced the stored schema for {}; the Engine declares these and they are not owned",
+            report.replaced_schemas.join(", ")
+        );
+    }
     if !report.uninterpreted_annotations.is_empty() {
         let listed = match report.uninterpreted_annotations.len() > 8 {
             true => format!(
