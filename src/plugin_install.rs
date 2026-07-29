@@ -1468,10 +1468,11 @@ fn add(
         },
     };
 
-    let Some(program) = std::env::var_os(PROVIDER_VARIABLE).map(PathBuf::from) else {
+    let Some(program) = crate::link::provider_program() else {
         let _ = writeln!(
             err,
-            "{PROVIDER_VARIABLE} names no provider executable, and a plugin source needs one"
+            "{}, and a plugin source needs one",
+            crate::link::no_provider_message()
         );
         return ExitClass::Unavailable;
     };

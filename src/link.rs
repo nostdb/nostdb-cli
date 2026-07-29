@@ -127,6 +127,57 @@ pub fn parse<'a>(words: &'a [&'a str]) -> Result<(Action, &'a [&'a str]), String
 /// does not exist on somebody else's machine — or, worse, one that does.
 pub const PROVIDER_VARIABLE: &str = "NOSTDB_GITHUB_PROVIDER";
 
+/// The bundled provider's file name.
+pub const PROVIDER_PROGRAM: &str = "nostdb-provider-github";
+
+/// The provider executable to start, or `None` when this installation has none.
+///
+/// `NOSTDB_GITHUB_PROVIDER` wins, and then the executable beside this one.
+///
+/// The sibling is checked because `docs/PRD.md` section 17.5 requires the GitHub provider to be
+/// "bundled at a compatible version in official distributions", and an env-only lookup made that
+/// impossible to honour: an installed release could ship the provider and still refuse every plugin
+/// install and every GitHub link until the caller found out about a variable nothing had mentioned.
+///
+/// Beside the running executable rather than on `PATH`. A release archive holds both programs, so the
+/// sibling is the one this build was published with — and picking one off `PATH` could start a provider
+/// from a different install at a different protocol version.
+#[must_use]
+pub fn provider_program() -> Option<PathBuf> {
+    if let Some(named) = std::env::var_os(PROVIDER_VARIABLE).map(PathBuf::from) {
+        return Some(named);
+    }
+    let beside = std::env::current_exe()
+        .ok()?
+        .parent()?
+        .join(bundled_file_name());
+    beside.is_file().then_some(beside)
+}
+
+/// What to say when no provider can be found.
+///
+/// One sentence for both callers, because they are refusing for the same reason and a caller who hit
+/// it through `plugin add` and then through `link refresh` should not have to recognise two wordings
+/// as one problem.
+///
+/// It names the sibling first. A release bundles the provider, so the likeliest reason to reach this is
+/// a build that was not installed from one — and telling that caller about an environment variable
+/// before telling them what a release contains is answering the rarer case first.
+#[must_use]
+pub fn no_provider_message() -> String {
+    format!(
+        "no GitHub provider: an official release ships `{PROVIDER_PROGRAM}` beside `nostdb`, \
+         or set {PROVIDER_VARIABLE} to one"
+    )
+}
+
+fn bundled_file_name() -> String {
+    match std::env::consts::EXE_SUFFIX.is_empty() {
+        true => PROVIDER_PROGRAM.to_owned(),
+        false => format!("{PROVIDER_PROGRAM}{}", std::env::consts::EXE_SUFFIX),
+    }
+}
+
 fn global_settings_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(PathBuf::from(home).join(".nostdb").join("settings.json"))
@@ -284,7 +335,7 @@ fn refresh(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitClass {
-    let program = std::env::var_os(PROVIDER_VARIABLE).map(PathBuf::from);
+    let program = provider_program();
     let mut started: Option<ProviderClient<ProviderProcess>> = None;
 
     let outcomes = project.refresh_links(|locator| {
@@ -293,7 +344,8 @@ fn refresh(
             // local should not need a provider installed to be told it has nothing to do.
             let Some(program) = program.as_deref() else {
                 return Err(format!(
-                    "{PROVIDER_VARIABLE} names no provider executable, and {locator} needs one"
+                    "{}, and {locator} needs one",
+                    no_provider_message()
                 ));
             };
             let process = ProviderProcess::start(program, &[])?;
@@ -456,6 +508,61 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
+    /// A provider beside the executable is found with nothing configured.
+    ///
+    /// `docs/PRD.md` section 17.5 requires the GitHub provider to be "bundled at a compatible version
+    /// in official distributions". The lookup was environment-only, so a release could ship the
+    /// provider and still refuse every plugin install and every GitHub link until the caller found out
+    /// about a variable nothing had mentioned — which is what a report of `plugin add` failing turned
+    /// out to be, once the source parser stopped truncating the URL.
+    #[test]
+    fn a_provider_beside_the_executable_needs_no_configuration() {
+        // The running test binary's directory stands in for an install directory: whatever
+        // `current_exe` reports is what a real `nostdb` would report about its own release.
+        let beside = std::env::current_exe()
+            .expect("this test has a path")
+            .parent()
+            .expect("and a directory")
+            .join(super::bundled_file_name());
+        // Cleaned up first in case an earlier run left one, so the two halves below cannot pass by
+        // accident from opposite states.
+        let _ = std::fs::remove_file(&beside);
+
+        // SAFETY-adjacent note: this test writes beside the test binary and removes it again. It does
+        // not set the variable, because doing so would make every other test in this process see it.
+        assert!(
+            std::env::var_os(super::PROVIDER_VARIABLE).is_some()
+                || super::provider_program().is_none(),
+            "with nothing beside it and nothing configured, there is no provider"
+        );
+
+        std::fs::write(&beside, b"#!/bin/sh\nexit 0\n").expect("a stand-in provider");
+        let found = super::provider_program();
+        let _ = std::fs::remove_file(&beside);
+
+        assert_eq!(
+            found.as_deref(),
+            Some(beside.as_path()),
+            "the sibling is what a bundled release ships"
+        );
+    }
+
+    /// The refusal names the bundled program before the variable.
+    #[test]
+    fn the_refusal_names_what_a_release_ships_first() {
+        let message = super::no_provider_message();
+        let bundled = message
+            .find(super::PROVIDER_PROGRAM)
+            .expect("it names the program");
+        let variable = message
+            .find(super::PROVIDER_VARIABLE)
+            .expect("and the variable");
+        assert!(
+            bundled < variable,
+            "a release bundles the provider, so that is the likelier answer: {message}"
+        );
+    }
+
     use super::*;
 
     #[test]

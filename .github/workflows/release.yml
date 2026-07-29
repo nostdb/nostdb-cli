@@ -13,7 +13,7 @@
 # # What it produces
 #
 # One archive per published target, each with two digests recorded by nostdb-distribution's assembler
-# — one for the archive and one for the binary inside it — collected into a single `checksums.json`
+# — one for the archive and one for every program inside it — collected into a single `checksums.json`
 # attached to the release. The npm launcher ships that file, so an artifact and the digest that would
 # accept it never travel by the same route.
 #
@@ -126,6 +126,30 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      # The GitHub provider, built from its own repository for the same target.
+      #
+      # `docs/PRD.md` section 17.5 requires it "bundled at a compatible version in official
+      # distributions", and no release contained it: every archive shipped one program, so every
+      # published install refused every plugin install and every GitHub link.
+      #
+      # Checked out at the revision the superproject pins rather than at its default branch. The root
+      # is what records which revision of each child this product is, and a release that took whatever
+      # the branch happened to be would ship a provider nothing had verified alongside this engine.
+      - name: Check out the pinned provider
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nostdb/nostdb-provider-github
+          path: .provider
+          persist-credentials: false
+
+      - name: Build the provider
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} \
+            --manifest-path .provider/Cargo.toml --target-dir provider-target
+
       - name: Assemble the archive
         shell: bash
         run: |
@@ -135,8 +159,14 @@ jobs:
           # half of the cycle described in the version gate above: this script attests that the binary
           # reports the version its archive is named for, and reading that version from the launcher
           # required the launcher to be bumped before the archives it would be named in existed.
+          provider=provider-target/${{ matrix.target }}/release/nostdb-provider-github
+          [ -f "$provider" ] || provider="$provider.exe"
+          # Required rather than optional here. The assembler accepts a release without a provider so it
+          # can still be assembled, and an *official* release must have one — so the absence is refused
+          # at the one place that knows this is one.
+          [ -f "$provider" ] || { echo "the provider did not build: $provider" >&2; exit 1; }
           node .distribution/scripts/assemble-release.mjs \
-            --binary "$binary" --target ${{ matrix.key }} \
+            --binary "$binary" --target ${{ matrix.key }} --provider "$provider" \
             --version '${{ inputs.version }}' --out dist
 
       - name: Keep the archive and its digests
@@ -222,8 +252,11 @@ jobs:
         shell: bash
         run: |
           notes=$(printf '%s\n' \
-            "Native archives for every published target, with \`checksums.json\` recording a digest for" \
-            "each archive and for the binary inside it." \
+            "Native archives for every published target. Each holds \`nostdb\` and the GitHub provider" \
+            "\`nostdb-provider-github\` beside it, which is where the engine looks for one — so a plugin" \
+            "install and a GitHub link work from an extracted release with nothing configured." \
+            "" \
+            "\`checksums.json\` records a digest for each archive and for every program inside it." \
             "" \
             "The npm launcher ships that same file, so an artifact and the digest that would accept it" \
             "do not travel by the same route. Verify before extracting:" \
