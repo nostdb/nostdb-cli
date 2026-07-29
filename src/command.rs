@@ -926,6 +926,53 @@ mod tests {
         }
     }
 
+    /// Every command the summary advertises as taking `[PATH]` accepts one.
+    ///
+    /// The summary said `build [PATH]` and `plan [PATH]` and the parser refused a positional path for
+    /// both. Nothing noticed, because the summary is prose and the parser is code and no test read them
+    /// against each other — so the help advertised a form that did not work, and a Skill built on the
+    /// advertised form emitted a command the Engine rejected.
+    ///
+    /// Read out of the summary rather than listed here. A hand-written list is the thing that went
+    /// stale: it would have had to be edited by whoever added the row that lied.
+    #[test]
+    fn every_advertised_path_argument_is_accepted() {
+        let (summary, _, _) = rendered(None);
+        let advertised: Vec<String> = summary
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let (command, rest) = line.split_once(' ')?;
+                if !rest.trim_start().starts_with("[PATH]") {
+                    return None;
+                }
+                command
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase())
+                    .then(|| command.to_owned())
+            })
+            .collect();
+        assert!(
+            !advertised.is_empty(),
+            "the summary advertises no [PATH] argument, so this proves nothing"
+        );
+
+        for command in &advertised {
+            let arguments = vec![command.clone(), ".".to_owned()];
+            match crate::Invocation::parse(&arguments) {
+                Ok(_) => {}
+                Err(error) => panic!(
+                    "the summary advertises `{command} [PATH]` and the parser refuses it: {error}"
+                ),
+            }
+        }
+        // Named so a reader can see which commands the check covered rather than trusting a count.
+        println!(
+            "advertised [PATH] arguments accepted: {}",
+            advertised.join(", ")
+        );
+    }
+
     #[test]
     fn every_command_has_a_help_topic() {
         // A command the summary advertises and help cannot describe is a gap a reader
