@@ -1714,6 +1714,56 @@ fn a_build_that_analyzed_nothing_names_the_languages_on_both_sides() {
 }
 
 #[test]
+fn a_spring_route_is_queryable_and_uninterpreted_annotations_are_named() {
+    // The reported question: `MATCH (e:Endpoint)` returned nothing. Two causes — nothing produced that
+    // label, and the route had been discarded with the annotation — and this is both halves, end to end
+    // through the command surface.
+    let dir = TempDir::new("spring-query");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(
+        dir.join("AuthController.kt"),
+        "import org.springframework.web.bind.annotation.RestController\n\n\
+         @RestController\n\
+         @RequestMapping(\"/auth\")\n\
+         class AuthController {\n\
+         \x20   @GetMapping(\"/google\")\n\
+         \x20   fun google(): String = \"\"\n\
+         }\n\
+         @Entity\n\
+         class Widget\n",
+    )
+    .unwrap();
+
+    let built = nostdb(["build", "--format", "json", "--project", &root]);
+    assert_eq!(built.class, ExitClass::Success, "{}", built.err);
+    let document: serde_json::Value = serde_json::from_str(&built.out).unwrap();
+    assert_eq!(document["endpoints"], 1);
+    assert_eq!(document["frameworks"][0], "spring");
+    // Named annotations rather than a framework name, because a framework this build cannot read is one
+    // it cannot name — and these are what a caller sends to a model when they want the facts anyway.
+    assert_eq!(document["uninterpreted_annotations"][0], "Entity");
+    assert!(
+        built.err.contains("no framework analyzer here interprets"),
+        "{}",
+        built.err
+    );
+
+    // And the question that started it, answered.
+    let queried = nostdb([
+        "query",
+        "MATCH (e:Endpoint) RETURN e.method, e.path",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(queried.class, ExitClass::Success, "{}", queried.err);
+    assert!(queried.out.contains("/auth/google"), "{}", queried.out);
+    assert!(queried.out.contains("GET"), "{}", queried.out);
+}
+
+#[test]
 fn a_project_holding_only_documents_builds_a_queryable_graph() {
     // Analysis does not depend on the language, and a repository of documents with no code at all
     // is a repository. Whatever else is true of it, its own files are facts about it.

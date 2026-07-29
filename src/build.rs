@@ -38,6 +38,9 @@ fn as_json(report: &BuildReport) -> Value {
         "source_revision": report.revision,
         "analyzed_files": report.analyzed_files,
         "recorded_files": report.recorded_files,
+        "endpoints": report.endpoints,
+        "frameworks": report.frameworks,
+        "uninterpreted_annotations": report.uninterpreted_annotations,
         "reused_files": report.reused_files,
         "cached_parses": report.cached_parses,
         "records": {
@@ -91,6 +94,14 @@ fn as_table(report: &BuildReport, out: &mut dyn Write) {
         "edges      {} created, {} updated, {} deleted",
         summary.edges_created, summary.edges_updated, summary.edges_deleted
     );
+    if report.endpoints > 0 || !report.frameworks.is_empty() {
+        let _ = writeln!(
+            out,
+            "endpoints  {} from {}",
+            report.endpoints,
+            report.frameworks.join(", ")
+        );
+    }
     let _ = writeln!(
         out,
         "references {} resolved, {} unresolved",
@@ -183,6 +194,23 @@ pub fn run(
                 );
             }
         }
+    }
+    // The capability diagnostic, per section 17.3. Named annotations rather than a framework, because a
+    // framework this build cannot read is one it cannot name — and these are what a caller sends to a
+    // model when they want the facts anyway.
+    if !report.uninterpreted_annotations.is_empty() {
+        let listed = match report.uninterpreted_annotations.len() > 8 {
+            true => format!(
+                "{}, and {} more",
+                report.uninterpreted_annotations[..8].join(", "),
+                report.uninterpreted_annotations.len() - 8
+            ),
+            false => report.uninterpreted_annotations.join(", "),
+        };
+        let _ = writeln!(
+            err,
+            "note: no framework analyzer here interprets {listed}; enrichment is what reads them"
+        );
     }
     for (reason, count) in &report.plan.skipped {
         let _ = writeln!(err, "note: {count} file(s) skipped: {reason}");
