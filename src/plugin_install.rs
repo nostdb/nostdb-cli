@@ -324,6 +324,114 @@ pub struct PlanEntry {
     pub bytes: u64,
 }
 
+/// The file a repository declares its plugins in.
+pub const INDEX_NAME: &str = "nostdb.plugins.json";
+
+/// The index version this build reads.
+pub const INDEX_VERSION: u64 = 2;
+
+/// Resolves a source's fragment against a repository's index, to the directory to install.
+///
+/// This is section 3.2 and 3.3 of the installation contract. A repository with no index is not a
+/// plugin source: treating any tree holding a `nostdb-plugin.json` as installable would make every
+/// fork, vendored copy, and test fixture a plugin nobody published.
+///
+/// # Errors
+///
+/// Every refusal is [`InstallCode::SourceInvalid`]. A repository that has not declared itself, an
+/// index this build cannot read, and a fragment naming nothing are all facts about the source.
+pub fn resolve_index(text: &str, wanted: Option<&str>) -> Result<String, InstallError> {
+    let refuse = |reason: String| InstallError::new(InstallCode::SourceInvalid, reason);
+    let index: serde_json::Value = serde_json::from_str(text)
+        .map_err(|error| refuse(format!("{INDEX_NAME} is not JSON: {error}")))?;
+
+    match index.get("plugin_install_version").and_then(|v| v.as_u64()) {
+        Some(INDEX_VERSION) => {}
+        Some(found) => {
+            return Err(refuse(format!(
+                "{INDEX_NAME} declares plugin_install_version {found}, and this build reads {INDEX_VERSION}"
+            )));
+        }
+        None => {
+            return Err(refuse(format!(
+                "{INDEX_NAME} declares no plugin_install_version"
+            )));
+        }
+    }
+
+    let declared = index
+        .get("plugins")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| refuse(format!("{INDEX_NAME} must map a name to a directory")))?;
+    if declared.is_empty() {
+        return Err(refuse(format!(
+            "{INDEX_NAME} declares no plugin, so this repository publishes none"
+        )));
+    }
+
+    // Validated for every entry, not only the one being installed. An index with one unusable
+    // mapping is an index its author got wrong, and installing past it would leave the mistake to be
+    // found by whoever asks for the other plugin.
+    let mut names: Vec<&str> = Vec::with_capacity(declared.len());
+    for (name, directory) in declared {
+        if name.is_empty() {
+            return Err(refuse(format!(
+                "{INDEX_NAME} maps an empty name, which no fragment can write"
+            )));
+        }
+        let Some(path) = directory.as_str() else {
+            return Err(refuse(format!(
+                "{INDEX_NAME} maps `{name}` to something that is not a path"
+            )));
+        };
+        if path.is_empty() {
+            return Err(refuse(format!(
+                "{INDEX_NAME} maps `{name}` to an empty path"
+            )));
+        }
+        if path.starts_with('/') || path.split('/').any(|part| part == "..") {
+            return Err(refuse(format!(
+                "{INDEX_NAME} maps `{name}` to `{path}`, which is not inside the repository"
+            )));
+        }
+        names.push(name.as_str());
+    }
+    names.sort_unstable();
+
+    let chosen = match wanted {
+        Some(name) => name,
+        // One plugin needs no fragment; more than one cannot be chosen here. Picking would install
+        // something nobody named, and the refusal lists what there was to name.
+        None if names.len() == 1 => names[0],
+        None => {
+            return Err(refuse(format!(
+                "this repository declares {} plugins, so name one: {}",
+                names.len(),
+                names.join(", ")
+            )));
+        }
+    };
+
+    declared
+        .get(chosen)
+        .and_then(|v| v.as_str())
+        // `.` is the repository root, and an index is allowed to say so: a repository publishing one
+        // plugin at its top level has no subdirectory to name. Normalised to empty here so nothing
+        // downstream has to know that `./nostdb-plugin.json` and `nostdb-plugin.json` are one path.
+        .map(
+            |path| match path.trim_end_matches('/').trim_end_matches("/.") {
+                "." | "" => String::new(),
+                trimmed => trimmed.to_owned(),
+            },
+        )
+        .ok_or_else(|| {
+            refuse(format!(
+                "`{chosen}` is not a plugin this repository declares; it declares {}",
+                names.join(", ")
+            ))
+        })
+}
+
 /// Decides which entries are part of the plugin, and refuses a tree that is not one.
 ///
 /// Every rule here is decidable from an enumeration, which is the property that lets a tree be
@@ -830,6 +938,12 @@ pub struct Fetched {
     pub tree_digest: String,
     /// Every accepted entry, keyed by its path within the plugin.
     pub files: Vec<(String, Vec<u8>)>,
+    /// The directory the index resolved the source to, when it was not the repository root.
+    ///
+    /// The **resolved directory**, not the name the caller wrote. The record says where a plugin came
+    /// from, and a name is what somebody asked for — an author who moves a plugin changes this and does
+    /// not change the command anybody published, which is the whole point of the index.
+    pub directory: Option<String>,
 }
 
 /// The locator a plugin source resolves through.
@@ -867,7 +981,45 @@ pub fn fetch<T: Transport>(
 ) -> Result<Fetched, FetchError> {
     let snapshot = client.resolve(&locator_for(source), None)?;
     let entries = client.enumerate(&snapshot.snapshot)?;
-    let planned = plan(&entries, source.subdirectory())?;
+
+    // The index first, per step 4 of the contract's order. It decides *which* entries are the plugin,
+    // so validating the tree before reading it would refuse a source over a path in a directory this
+    // install never touches.
+    //
+    // The index is not part of the plugin: it is not planned, not digested, and not written. A file
+    // that decided what to install is not part of what was installed.
+    let index_entry = entries
+        .iter()
+        .find(|entry| entry.path == INDEX_NAME)
+        .ok_or_else(|| {
+            InstallError::new(
+                InstallCode::SourceInvalid,
+                format!(
+                    "this repository has no {INDEX_NAME}, so it does not declare itself a plugin source"
+                ),
+            )
+        })?;
+    let index_bytes = client.read(&snapshot.snapshot, &index_entry.path)?;
+    let index_text = String::from_utf8(index_bytes).map_err(|_| {
+        InstallError::new(
+            InstallCode::SourceInvalid,
+            format!("{INDEX_NAME} is not UTF-8"),
+        )
+    })?;
+    let directory = resolve_index(&index_text, source.subdirectory())?;
+
+    // The index is removed before planning, not filtered out afterwards.
+    //
+    // It only ever collides when the plugin is at the repository root, and there it would otherwise be
+    // planned, read, digested, and written as one of the plugin's own files — so the tree digest would
+    // cover a file that decided what to install, and reinstalling after an unrelated edit to the index
+    // would report the plugin's bytes as changed.
+    let entries: Vec<Entry> = entries
+        .into_iter()
+        .filter(|entry| entry.path != INDEX_NAME)
+        .collect();
+    let resolved = (!directory.is_empty()).then(|| directory.clone());
+    let planned = plan(&entries, resolved.as_deref())?;
 
     // The manifest first, and on its own. A tree that is not a plugin is refused before its
     // bytes are paid for, and a manifest that will not do is refused before the rest arrives.
@@ -925,6 +1077,7 @@ pub fn fetch<T: Transport>(
         manifest_digest: digest_bytes(&manifest_bytes).to_string(),
         tree_digest: tree_digest(&files),
         files,
+        directory: resolved,
     })
 }
 
@@ -1157,7 +1310,7 @@ pub fn commit_install(
             source.repository()
         ),
         commit: fetched.commit.clone(),
-        subdirectory: source.subdirectory().map(str::to_owned),
+        subdirectory: fetched.directory.clone(),
         manifest_digest: fetched.manifest_digest.clone(),
         tree_digest: fetched.tree_digest.clone(),
         scope,
@@ -1546,6 +1699,111 @@ fn add(
 
 #[cfg(test)]
 mod tests {
+    fn index(body: &str) -> String {
+        format!(r#"{{"plugin_install_version":2,{body}}}"#)
+    }
+
+    #[test]
+    fn one_declared_plugin_needs_no_name() {
+        let text = index(r#""plugins":{"only":"plugins/only"}"#);
+        assert_eq!(
+            super::resolve_index(&text, None).expect("resolved"),
+            "plugins/only"
+        );
+    }
+
+    #[test]
+    fn a_name_resolves_to_the_directory_the_index_maps_it_to() {
+        // Deliberately not the directory the name spells, so a reader that fell back to treating the
+        // fragment as a path would fail here rather than pass by coincidence.
+        let text = index(r#""plugins":{"viewer":"plugins/the-viewer","lint":"tools/lint"}"#);
+        assert_eq!(
+            super::resolve_index(&text, Some("viewer")).expect("resolved"),
+            "plugins/the-viewer"
+        );
+        assert_eq!(
+            super::resolve_index(&text, Some("lint")).expect("resolved"),
+            "tools/lint"
+        );
+    }
+
+    #[test]
+    fn a_root_mapping_is_the_repository_itself() {
+        // `.` is the root, and a repository publishing one plugin at its top level has no
+        // subdirectory to name. An **empty** path is not the root spelled differently — the contract
+        // refuses it, because it is a mapping nobody wrote rather than a place.
+        for root in [".", "./"] {
+            let text = index(&format!(r#""plugins":{{"only":"{root}"}}"#));
+            assert_eq!(super::resolve_index(&text, None).expect(root), "", "{root}");
+        }
+        for refused in ["", "plugins/../."] {
+            let text = index(&format!(r#""plugins":{{"only":"{refused}"}}"#));
+            assert!(
+                super::resolve_index(&text, None).is_err(),
+                "`{refused}` is not a directory this index may name"
+            );
+        }
+    }
+
+    #[test]
+    fn several_declared_plugins_refuse_rather_than_choose_one() {
+        let text = index(r#""plugins":{"a":"plugins/a","b":"plugins/b"}"#);
+        let error = super::resolve_index(&text, None).expect_err("refused");
+        let reported = error.to_string();
+        assert!(reported.contains("name one"), "{reported}");
+        // Both names, so a caller can correct the command without opening the repository.
+        assert!(
+            reported.contains('a') && reported.contains('b'),
+            "{reported}"
+        );
+    }
+
+    #[test]
+    fn a_name_the_index_does_not_declare_is_refused_with_the_ones_it_does() {
+        let text = index(r#""plugins":{"a":"plugins/a"}"#);
+        let reported = super::resolve_index(&text, Some("b"))
+            .expect_err("refused")
+            .to_string();
+        assert!(reported.contains("`b` is not"), "{reported}");
+        assert!(reported.contains("a"), "{reported}");
+    }
+
+    #[test]
+    fn an_index_this_build_cannot_read_is_refused_rather_than_guessed() {
+        for (body, what) in [
+            (r#""plugins":{"a":"plugins/a"}"#, "unreadable version"),
+            (r#""plugins":{}"#, "no plugin"),
+            (r#""plugins":["plugins/a"]"#, "a list"),
+            (r#""plugins":{"":"plugins/a"}"#, "an empty name"),
+            (r#""plugins":{"a":""}"#, "an empty path"),
+            (r#""plugins":{"a":"/etc/a"}"#, "an absolute path"),
+            (r#""plugins":{"a":"../a"}"#, "an escaping path"),
+            (r#""plugins":{"a":42}"#, "a path that is not text"),
+        ] {
+            // The version is the odd one out: it is supplied wrongly rather than omitted from `body`.
+            let text = match what {
+                "unreadable version" => format!(r#"{{"plugin_install_version":1,{body}}}"#),
+                _ => index(body),
+            };
+            let error = super::resolve_index(&text, None).expect_err(what);
+            assert_eq!(error.code, super::InstallCode::SourceInvalid, "{what}");
+        }
+        // And no version at all.
+        let error =
+            super::resolve_index(r#"{"plugins":{"a":"plugins/a"}}"#, None).expect_err("no version");
+        assert_eq!(error.code, super::InstallCode::SourceInvalid);
+        // And not JSON.
+        assert!(super::resolve_index("{", None).is_err());
+    }
+
+    #[test]
+    fn one_bad_mapping_refuses_the_index_even_when_another_plugin_was_asked_for() {
+        // An index with one unusable mapping is an index its author got wrong. Installing past it would
+        // leave the mistake to be found by whoever asks for the other plugin.
+        let text = index(r#""plugins":{"good":"plugins/good","bad":"../escape"}"#);
+        assert!(super::resolve_index(&text, Some("good")).is_err());
+    }
+
     /// The source `PLUGIN_REQUIRED` tells a caller to run must be one this parser accepts.
     ///
     /// It was not. Every argument was split on `=` to support `--scope=global`, and the part before
@@ -1574,7 +1832,9 @@ mod tests {
         let parsed = crate::plugin::PluginSource::parse(&operand)
             .unwrap_or_else(|error| panic!("the source grammar refuses `{operand}`: {error}"));
         assert_eq!(parsed.reference(), "main", "with its ref intact");
-        assert_eq!(parsed.subdirectory(), Some("reference/view-webgpu"));
+        // A name in the repository's index, not a path. The grammar carries it either way — what
+        // changed is what it means, and `resolve_index` is what turns it into a directory.
+        assert_eq!(parsed.subdirectory(), Some("view-webgpu"));
     }
 
     /// An operand keeps every `=` it was given; an option still splits on the first one.

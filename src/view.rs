@@ -40,7 +40,15 @@ pub const VIEW_ACTION: &str = "view";
 /// plugin and its pinned source. A refusal naming neither would leave a user to search for one.
 pub const RECOMMENDED: (&str, &str) = (
     "org.nostdb.view-webgpu",
-    "https://github.com/nostdb/plugins?ref=main#reference/view-webgpu",
+    // The fragment names a key in the repository's `nostdb.plugins.json`, not a directory. It used to
+    // name `reference/view-webgpu`, which was a path — so moving the plugin would have broken every
+    // command anybody had published, and this constant would have gone stale silently.
+    //
+    // The name here is the index key, and the name beside it is the manifest's. They differ on purpose:
+    // the index says what to fetch and the manifest says what was installed, and a refusal that showed
+    // only one of them would leave a caller unable to write either the install command or the query
+    // that finds it afterwards.
+    "https://github.com/nostdb/plugins?ref=main#view-webgpu",
 );
 
 /// The magic every exchange container opens with.

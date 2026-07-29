@@ -112,23 +112,43 @@ fn manifest(range: &str) -> String {
     )
 }
 
-/// A conversation that serves one plugin: a manifest and one other file.
+/// The index a repository declares its plugins in.
+///
+/// Every conversation below serves one, because `plugin_install_version` 2 recognises a plugin source
+/// by this file rather than by finding a manifest in a tree. A fake tree without one is not a tree the
+/// installer is allowed to read, which is the point of the contract.
+fn index(plugins: &[(&str, &str)]) -> String {
+    let mapped: Vec<String> = plugins
+        .iter()
+        .map(|(name, directory)| format!(r#""{name}":"{directory}""#))
+        .collect();
+    format!(
+        r#"{{"plugin_install_version":2,"plugins":{{{}}}}}"#,
+        mapped.join(",")
+    )
+}
+
+/// A conversation that serves one plugin at the repository root: an index, a manifest, one file.
 fn conversation(range: &str, tool: &[u8]) -> (Vec<String>, Vec<Vec<u8>>) {
     let manifest = manifest(range);
     let manifest_bytes = manifest.clone().into_bytes();
+    let index_bytes = index(&[("viewer", ".")]).into_bytes();
     let replies = vec![
         handshake(),
         resolve(),
         enumerate(&[
+            ("nostdb.plugins.json", index_bytes.len()),
             ("nostdb-plugin.json", manifest_bytes.len()),
             ("bin/viewer", tool.len()),
         ]),
+        read(index_bytes.len()),
         read(manifest_bytes.len()),
         read(tool.len()),
     ];
-    // The manifest first, then the rest. A tree that will not do is refused before its bytes are
-    // paid for, and this order is what the requests below assert.
-    let content = vec![manifest_bytes, tool.to_vec()];
+    // The index, then the manifest, then the rest. The index decides which entries are the plugin, a
+    // tree that will not do is refused before its bytes are paid for, and this order is what the
+    // requests below assert.
+    let content = vec![index_bytes, manifest_bytes, tool.to_vec()];
     (replies, content)
 }
 
@@ -334,44 +354,113 @@ fn an_incompatible_range_is_refused_before_the_rest_of_the_tree_is_read() {
 }
 
 #[test]
-fn a_tree_that_is_not_a_plugin_is_refused_without_reading_anything() {
-    let manifestless = vec![
+fn a_repository_that_declared_nothing_is_not_a_plugin_source() {
+    // The first thing an install decides, and it decides it from the enumeration. Without the index,
+    // any tree holding a `nostdb-plugin.json` anywhere would be installable — every fork, vendored
+    // copy, and test fixture included.
+    let undeclared = vec![
         handshake(),
         resolve(),
-        enumerate(&[("README.md", 12), ("bin/viewer", 6)]),
+        enumerate(&[("nostdb-plugin.json", 400), ("bin/viewer", 6)]),
     ];
-    let mut client = scripted_client(manifestless, Vec::new());
+    let mut client = scripted_client(undeclared, Vec::new());
     let source = source("https://github.com/example/viewer?ref=v1.0.0");
 
     let error = fetch(&mut client, &source, &engine()).expect_err("refused");
     assert_eq!(error.code(), "PLUGIN_SOURCE_INVALID");
-    // The script holds no content at all, so reaching a read would have failed differently.
-    // That is the assertion: a tree is refused from its enumeration.
-    assert!(error.to_string().contains("nostdb-plugin.json"));
+    // The script holds no content at all, so reaching a read would have failed differently. That is
+    // the assertion: a repository is refused from its enumeration, with a manifest present.
+    assert!(error.to_string().contains("nostdb.plugins.json"), "{error}");
 }
 
 #[test]
-fn a_subdirectory_install_records_the_subdirectory_and_installs_only_it() {
+fn a_declared_directory_holding_no_manifest_is_refused_without_reading_it() {
+    let index_bytes = index(&[("viewer", "plugins/viewer")]).into_bytes();
+    let manifestless = vec![
+        handshake(),
+        resolve(),
+        enumerate(&[
+            ("nostdb.plugins.json", index_bytes.len()),
+            ("plugins/viewer/README.md", 12),
+        ]),
+        read(index_bytes.len()),
+    ];
+    let mut client = scripted_client(manifestless, vec![index_bytes]);
+    let source = source("https://github.com/example/viewer?ref=v1.0.0");
+
+    let error = fetch(&mut client, &source, &engine()).expect_err("refused");
+    assert_eq!(error.code(), "PLUGIN_SOURCE_INVALID");
+    assert!(error.to_string().contains("nostdb-plugin.json"), "{error}");
+}
+
+#[test]
+fn a_fragment_naming_no_declared_plugin_is_refused_with_the_names_that_exist() {
+    let index_bytes = index(&[("viewer", "plugins/viewer"), ("lint", "plugins/lint")]).into_bytes();
+    let replies = vec![
+        handshake(),
+        resolve(),
+        enumerate(&[("nostdb.plugins.json", index_bytes.len())]),
+        read(index_bytes.len()),
+    ];
+    let mut client = scripted_client(replies, vec![index_bytes]);
+    let source = source("https://github.com/example/viewer?ref=v1.0.0#absent");
+
+    let error = fetch(&mut client, &source, &engine()).expect_err("refused");
+    assert_eq!(error.code(), "PLUGIN_SOURCE_INVALID");
+    let reported = error.to_string();
+    // The names that exist, so a caller can correct the command without opening the repository.
+    assert!(
+        reported.contains("lint") && reported.contains("viewer"),
+        "{reported}"
+    );
+}
+
+#[test]
+fn several_declared_plugins_with_no_fragment_refuse_rather_than_choose() {
+    let index_bytes = index(&[("viewer", "plugins/viewer"), ("lint", "plugins/lint")]).into_bytes();
+    let replies = vec![
+        handshake(),
+        resolve(),
+        enumerate(&[("nostdb.plugins.json", index_bytes.len())]),
+        read(index_bytes.len()),
+    ];
+    let mut client = scripted_client(replies, vec![index_bytes]);
+    let source = source("https://github.com/example/viewer?ref=v1.0.0");
+
+    let error = fetch(&mut client, &source, &engine()).expect_err("refused");
+    assert_eq!(error.code(), "PLUGIN_SOURCE_INVALID");
+    assert!(error.to_string().contains("name one"), "{error}");
+}
+
+#[test]
+fn a_named_plugin_records_its_directory_and_installs_only_it() {
     let scratch = Scratch::new("subdirectory");
     let manifest = manifest(">=0.1.0 <0.2.0");
     let bytes = manifest.clone().into_bytes();
+    // The fragment is a **name** now, and the index says where that name lives. The directory is
+    // deliberately not what the name would spell, so a build that still treated the fragment as a path
+    // would fail here instead of passing by coincidence.
+    let index_bytes = index(&[("viewer", "plugins/the-viewer")]).into_bytes();
     let replies = vec![
         handshake(),
         resolve(),
         enumerate(&[
             ("README.md", 40),
-            ("plugins/viewer/nostdb-plugin.json", bytes.len()),
-            ("plugins/viewer/bin/viewer", 6),
+            ("nostdb.plugins.json", index_bytes.len()),
+            ("plugins/the-viewer/nostdb-plugin.json", bytes.len()),
+            ("plugins/the-viewer/bin/viewer", 6),
         ]),
+        read(index_bytes.len()),
         read(bytes.len()),
         read(6),
     ];
-    let content = vec![bytes, b"binary".to_vec()];
+    let content = vec![index_bytes, bytes, b"binary".to_vec()];
     let mut client = scripted_client(replies, content);
-    let source = source("https://github.com/example/viewer?ref=v1.0.0#plugins/viewer");
+    let source = source("https://github.com/example/viewer?ref=v1.0.0#viewer");
 
     let fetched = fetch(&mut client, &source, &engine()).expect("installable");
-    // Two files, not three. The document above the subdirectory is not part of the plugin.
+    // Two files, not four. The document above the directory is not part of the plugin, and neither is
+    // the index — a file that decided what to install is not part of what was installed.
     assert_eq!(fetched.files.len(), 2);
     let paths: Vec<&str> = fetched
         .files
@@ -387,7 +476,10 @@ fn a_subdirectory_install_records_the_subdirectory_and_installs_only_it() {
             .find("org.example.viewer")
             .expect("recorded")
             .subdirectory,
-        Some("plugins/viewer".to_owned())
+        // The directory the index resolved to, not the `viewer` the caller wrote. The record says
+        // where the plugin came from; an author who moves it changes this and does not change the
+        // command anybody published.
+        Some("plugins/the-viewer".to_owned())
     );
     assert!(
         !scratch
@@ -418,13 +510,18 @@ fn a_provider_that_cannot_reach_the_host_is_reported_as_unavailable() {
 fn a_refused_manifest_keeps_the_manifest_contract_code() {
     let broken = r#"{"manifest_version":1,"name":"viewer","version":"1.0.0","nostdb":">=0.1.0","entrypoint":{"command":"sh -c evil"},"protocol_version":1,"actions":[],"permissions":{"graph_read":true,"database_write":true,"output_paths":[],"network_hosts":[]}}"#;
     let bytes = broken.as_bytes().to_vec();
+    let index_bytes = index(&[("viewer", ".")]).into_bytes();
     let replies = vec![
         handshake(),
         resolve(),
-        enumerate(&[("nostdb-plugin.json", bytes.len())]),
+        enumerate(&[
+            ("nostdb.plugins.json", index_bytes.len()),
+            ("nostdb-plugin.json", bytes.len()),
+        ]),
+        read(index_bytes.len()),
         read(bytes.len()),
     ];
-    let mut client = scripted_client(replies, vec![bytes]);
+    let mut client = scripted_client(replies, vec![index_bytes, bytes]);
     let source = source("https://github.com/example/viewer?ref=v1.0.0");
 
     let error = fetch(&mut client, &source, &engine()).expect_err("refused");
