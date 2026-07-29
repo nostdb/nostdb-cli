@@ -1241,9 +1241,22 @@ pub fn parse(arguments: &[&str]) -> Result<Action, String> {
     let mut index = 0;
     while index < rest.len() {
         let argument = rest[index];
-        let (name, inline) = argument
-            .split_once('=')
-            .map_or((argument, None), |(name, value)| (name, Some(value)));
+        // Split on `=` **only for an option**, so `--scope=global` works and an operand arrives whole.
+        //
+        // It used to split every argument, and the part before the `=` was what got pushed as the
+        // operand. So the recommended plugin source
+        // `https://github.com/nostdb/plugins?ref=main#reference/view-webgpu` reached the source parser
+        // as `https://github.com/nostdb/plugins?ref`, which was then refused for not being
+        // `ref=<git-ref>` — a message about the source grammar for a source the grammar never saw.
+        //
+        // `PLUGIN_REQUIRED` prints that exact URL as the command to run, so the one source the CLI
+        // recommends was the one it could not install.
+        let (name, inline) = match argument.starts_with('-') {
+            true => argument
+                .split_once('=')
+                .map_or((argument, None), |(name, value)| (name, Some(value))),
+            false => (argument, None),
+        };
         match name {
             // `--scope` takes a value, and `--project` elsewhere on the surface takes a path.
             // Spelling the scope as `--project` would have made one word mean a scope here and
@@ -1532,6 +1545,56 @@ fn add(
 
 #[cfg(test)]
 mod tests {
+    /// The source `PLUGIN_REQUIRED` tells a caller to run must be one this parser accepts.
+    ///
+    /// It was not. Every argument was split on `=` to support `--scope=global`, and the part before
+    /// the `=` was pushed as the operand, so
+    /// `https://github.com/nostdb/plugins?ref=main#reference/view-webgpu` reached the source parser as
+    /// `https://github.com/nostdb/plugins?ref` and was refused for not being `ref=<git-ref>`. The
+    /// message described the source grammar for a source the grammar never saw, and the one plugin the
+    /// CLI recommends was the one it could not install.
+    ///
+    /// Read from `view.rs` rather than written out here, so a change to what is recommended cannot
+    /// leave this checking a string nobody prints.
+    #[test]
+    fn the_recommended_plugin_source_is_one_this_parser_accepts() {
+        let (_, source) = crate::view::RECOMMENDED;
+        let action = super::parse(&["add", source]).unwrap_or_else(|error| {
+            panic!("`PLUGIN_REQUIRED` recommends `{source}` and this parser refuses it: {error}")
+        });
+        let super::Action::Add {
+            source: operand, ..
+        } = action
+        else {
+            panic!("a source parses as an install");
+        };
+        assert_eq!(operand, source, "the operand arrives whole");
+        // And through the source grammar, which is the parser that reported the refusal.
+        let parsed = crate::plugin::PluginSource::parse(&operand)
+            .unwrap_or_else(|error| panic!("the source grammar refuses `{operand}`: {error}"));
+        assert_eq!(parsed.reference(), "main", "with its ref intact");
+        assert_eq!(parsed.subdirectory(), Some("reference/view-webgpu"));
+    }
+
+    /// An operand keeps every `=` it was given; an option still splits on the first one.
+    #[test]
+    fn an_equals_splits_an_option_and_never_an_operand() {
+        let scoped = super::parse(&["add", "https://github.com/o/r?ref=v1#sub", "--scope=global"])
+            .expect("an option splits");
+        let super::Action::Add { source, scope } = scoped else {
+            panic!("an install");
+        };
+        assert_eq!(
+            source, "https://github.com/o/r?ref=v1#sub",
+            "the operand keeps both of its `=`-free halves and its `=`"
+        );
+        assert_eq!(
+            scope,
+            Some(super::Scope::Global),
+            "and the option still splits"
+        );
+    }
+
     use super::*;
 
     fn entry(path: &str, bytes: u64) -> Entry {
