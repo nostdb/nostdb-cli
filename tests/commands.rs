@@ -1378,19 +1378,21 @@ fn plan_reports_what_a_build_would_do_and_accounts_for_every_file() {
     let document: serde_json::Value = serde_json::from_str(&result.out).unwrap();
 
     assert_eq!(document["plan_version"], 1);
-    assert_eq!(document["scanned_files"], 2, "{}", result.out);
+    // `main.rs`, `app.py`, and `.gitignore` — the last named `unknown`, because what a file is
+    // called does not decide whether it is in the repository.
+    assert_eq!(document["scanned_files"], 3, "{}", result.out);
     assert_eq!(
         document["structural_files"], 1,
         "the Rust file is covered deterministically: {}",
         result.out
     );
     assert_eq!(
-        document["unsupported_files"], 1,
-        "the Python file is not, and stays eligible for AI instead"
+        document["unsupported_files"], 2,
+        "the Python file is not, nor is `.gitignore`, and both stay eligible for AI instead"
     );
     assert_eq!(
-        document["semantic_candidates"], 1,
-        "a file a deterministic analyzer covers is not a candidate for enrichment"
+        document["semantic_candidates"], 2,
+        "a file a deterministic analyzer covers is not a candidate for enrichment; the other two are"
     );
     assert_eq!(document["semantic_cache_hits"], 0);
 
@@ -1409,7 +1411,8 @@ fn plan_reports_what_a_build_would_do_and_accounts_for_every_file() {
         languages,
         [
             ("python", "unsupported"),
-            ("rust", "deterministic syntactic")
+            ("rust", "deterministic syntactic"),
+            ("unknown", "unsupported"),
         ],
         "precision travels with every language, so nobody can read a syntactic fact as a \
          resolved one"
@@ -1682,7 +1685,8 @@ fn a_build_that_analyzed_nothing_names_the_languages_on_both_sides() {
     // The file is still in the graph. This assertion used to require the opposite, which is the
     // behaviour section 17.3 forbids: an unsupported language produces a source record at minimum.
     assert_eq!(document["recorded_files"], 1);
-    assert_eq!(document["records"]["nodes_created"], 1);
+    // The file, and the directory it sits in.
+    assert_eq!(document["records"]["nodes_created"], 2);
 
     assert!(
         built.err.contains("it analyzes rust"),
