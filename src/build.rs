@@ -37,6 +37,7 @@ fn as_json(report: &BuildReport) -> Value {
         "generation": report.generation.get(),
         "source_revision": report.revision,
         "analyzed_files": report.analyzed_files,
+        "recorded_files": report.recorded_files,
         "reused_files": report.reused_files,
         "cached_parses": report.cached_parses,
         "records": {
@@ -70,6 +71,15 @@ fn as_table(report: &BuildReport, out: &mut dyn Write) {
         report.cached_parses,
         report.reused_files,
         report.coverage.structural
+    );
+    // Reported beside `analyzed` rather than folded into it. A project no analyzer covers reads
+    // `analyzed 0 files` and then `nodes 41 created`, and without this line those two look like a
+    // contradiction instead of the two different things they are.
+    let _ = writeln!(
+        out,
+        "recorded   {} files, {} with no analyzer for their language",
+        report.recorded_files,
+        report.recorded_files.saturating_sub(report.analyzed_files)
     );
     let _ = writeln!(
         out,
@@ -137,7 +147,8 @@ pub fn run(
         // before knowing what a repository contains.
         let _ = writeln!(
             err,
-            "note: no file has a language this build analyzes, so nothing was committed"
+            "note: no file has a language this build analyzes, so the graph holds the files \
+             themselves and nothing from inside them"
         );
         // Which languages, on both sides.
         //

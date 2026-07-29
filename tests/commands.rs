@@ -1678,8 +1678,11 @@ fn a_build_that_analyzed_nothing_names_the_languages_on_both_sides() {
     // Not a failure: a project with nothing this build reads is a fact about the project.
     assert_eq!(built.class, ExitClass::Success, "{}", built.err);
     let document: serde_json::Value = serde_json::from_str(&built.out).unwrap();
-    assert_eq!(document["analyzed_files"], 0);
-    assert_eq!(document["records"]["nodes_created"], 0);
+    assert_eq!(document["analyzed_files"], 0, "no analyzer covers Kotlin");
+    // The file is still in the graph. This assertion used to require the opposite, which is the
+    // behaviour section 17.3 forbids: an unsupported language produces a source record at minimum.
+    assert_eq!(document["recorded_files"], 1);
+    assert_eq!(document["records"]["nodes_created"], 1);
 
     assert!(
         built.err.contains("it analyzes rust"),
@@ -1688,8 +1691,49 @@ fn a_build_that_analyzed_nothing_names_the_languages_on_both_sides() {
     );
     assert!(
         built.err.contains("this project is kotlin"),
-        "and what it found, which is the half that says why the count is zero: {}",
+        "and what it found, which is the half that says why nothing was read: {}",
         built.err
+    );
+    assert!(
+        !built.err.contains("nothing was committed"),
+        "a generation holding the file was committed, so the note must not deny it: {}",
+        built.err
+    );
+}
+
+#[test]
+fn a_project_holding_only_documents_builds_a_queryable_graph() {
+    // Analysis does not depend on the language, and a repository of documents with no code at all
+    // is a repository. Whatever else is true of it, its own files are facts about it.
+    let dir = TempDir::new("documents-only");
+    let root = dir.path().to_string_lossy().into_owned();
+    nostdb(["init", &root]);
+    fs::write(dir.join("README.md"), "# Title\n\nProse.\n").unwrap();
+    fs::write(dir.join("CONTRIBUTING.md"), "# How\n").unwrap();
+
+    let built = nostdb(["build", "--format", "json", "--project", &root]);
+    assert_eq!(built.class, ExitClass::Success, "{}", built.err);
+    let document: serde_json::Value = serde_json::from_str(&built.out).unwrap();
+    assert_eq!(document["recorded_files"], 2);
+    assert!(
+        document["generation"].as_u64().unwrap() > 1,
+        "a generation is committed, not skipped for having no analyzable source"
+    );
+
+    // Queryable, which is what makes the record worth having rather than merely present.
+    let queried = nostdb([
+        "query",
+        "MATCH (f:File) RETURN f.path ORDER BY f.path",
+        "--format",
+        "json",
+        "--project",
+        &root,
+    ]);
+    assert_eq!(queried.class, ExitClass::Success, "{}", queried.err);
+    assert!(
+        queried.out.contains("README.md") && queried.out.contains("CONTRIBUTING.md"),
+        "{}",
+        queried.out
     );
 }
 
