@@ -1040,8 +1040,8 @@ mod tests {
         }
         // The language is at version 2 and the container at 1, which is exactly why they
         // are reported separately rather than as one product number.
-        assert!(text.contains("\"nost_language_versions\": [2]"), "{text}");
-        assert!(text.contains("\"nostdb_format_versions\": [1]"), "{text}");
+        assert!(text.contains("\"nost_language_versions\": [3]"), "{text}");
+        assert!(text.contains("\"nostdb_format_versions\": [2]"), "{text}");
     }
 
     #[test]

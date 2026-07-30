@@ -59,7 +59,7 @@ fn nostdb_run(arguments: &[&str]) -> Output {
 }
 
 const SAMPLE: &str = "\
-@nost 2
+@nost 3
 
 schema Function {
   name: string,
@@ -169,7 +169,7 @@ fn check_accepts_a_valid_nost_file_and_the_database_it_becomes() {
 fn check_reports_a_syntax_error_as_a_validation_failure() {
     let dir = TempDir::new("check-syntax");
     let nost = dir.join("broken.nost");
-    fs::write(&nost, "@nost 2\nnode n {\n}\n").unwrap();
+    fs::write(&nost, "@nost 3\nnode n {\n}\n").unwrap();
 
     let result = nostdb(["check", nost.to_str().unwrap()]);
     assert_eq!(result.class, ExitClass::Validation);
@@ -181,7 +181,7 @@ fn check_reports_a_syntax_error_as_a_validation_failure() {
 fn check_reports_a_semantic_error_with_its_code() {
     let dir = TempDir::new("check-semantic");
     let nost = dir.join("duplicate.nost");
-    fs::write(&nost, "@nost 2\nnode a: L {}\nnode a: L {}\n").unwrap();
+    fs::write(&nost, "@nost 3\nnode a: L {}\nnode a: L {}\n").unwrap();
 
     let result = nostdb(["check", nost.to_str().unwrap()]);
     assert_eq!(result.class, ExitClass::Validation);
@@ -198,7 +198,7 @@ fn a_warning_alone_still_succeeds_and_is_still_reported() {
     // never sees is the same as no warning at all.
     let dir = TempDir::new("check-warning");
     let nost = dir.join("warned.nost");
-    fs::write(&nost, "@nost 2\nnode a: L {}\nedge a -> gone :R {}\n").unwrap();
+    fs::write(&nost, "@nost 3\nnode a: L {}\nedge a -> gone :R {}\n").unwrap();
 
     let result = nostdb(["check", nost.to_str().unwrap()]);
     assert_eq!(result.class, ExitClass::Success, "{}", result.err);
@@ -281,7 +281,7 @@ fn a_refused_conversion_leaves_the_target_exactly_as_it_was() {
     let dir = TempDir::new("convert-preserves");
     let broken = dir.join("broken.nost");
     let target = dir.join("root.nostdb");
-    fs::write(&broken, "@nost 2\nnode a: L {\n id: \"n_1\",\n}\n").unwrap();
+    fs::write(&broken, "@nost 3\nnode a: L {\n id: \"n_1\",\n}\n").unwrap();
 
     // Seed the target with a database built from something valid.
     let good = dir.join("good.nost");
@@ -323,7 +323,7 @@ fn convert_refuses_an_external_endpoint_as_unavailable_rather_than_invalid() {
     let target = dir.join("root.nostdb");
     fs::write(
         &source,
-        "@nost 2\n@link \"./shared\" as shared\nnode a: L {}\nedge a -> shared::x :R {}\n",
+        "@nost 3\n@link \"./shared\" as shared\nnode a: L {}\nedge a -> shared::x :R {}\n",
     )
     .unwrap();
 
@@ -382,7 +382,7 @@ fn export_writes_the_project_graph_and_warns_when_materialization_is_off() {
     assert_eq!(exported.class, ExitClass::Success, "{}", exported.err);
     let written = dir.join(".nostdb/root.nost");
     assert!(written.is_file());
-    assert!(fs::read_to_string(&written).unwrap().starts_with("@nost 2"));
+    assert!(fs::read_to_string(&written).unwrap().starts_with("@nost 3"));
     // database.nost defaults to false, so the file is written and the caller is told it
     // will not be maintained.
     assert!(
@@ -639,7 +639,7 @@ fn project_with_links(label: &str, links: &str) -> TempDir {
     let root = dir.path().to_string_lossy().into_owned();
     assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
     let source = dir.join("seed.nost");
-    fs::write(&source, format!("@nost 2\n\n{links}\nnode a: L {{}}\n")).unwrap();
+    fs::write(&source, format!("@nost 3\n\n{links}\nnode a: L {{}}\n")).unwrap();
     let converted = nostdb([
         "convert",
         source.to_str().unwrap(),
@@ -680,7 +680,7 @@ fn link_list_reports_a_reachable_link_as_opened() {
     fs::write(
         &source,
         format!(
-            "@nost 2\n\n@link \"{}\" as target\n\nnode a: L {{}}\n",
+            "@nost 3\n\n@link \"{}\" as target\n\nnode a: L {{}}\n",
             target.path().join(".nostdb/root.nostdb").display()
         ),
     )
@@ -831,7 +831,7 @@ fn a_query_sees_records_from_a_linked_source() {
     fs::write(
         &source,
         format!(
-            "@nost 2\n\n@link \"{}\" as child\n\nnode local: Function {{\n  name: \"from-root\",\n}}\n",
+            "@nost 3\n\n@link \"{}\" as child\n\nnode local: Function {{\n  name: \"from-root\",\n}}\n",
             target.path().join(".nostdb/root.nostdb").display()
         ),
     )
@@ -912,7 +912,7 @@ fn a_write_naming_a_linked_record_is_refused_and_the_target_is_untouched() {
     fs::write(
         &source,
         format!(
-            "@nost 2\n\n@link \"{}\"\n\nnode local: Function {{}}\n",
+            "@nost 3\n\n@link \"{}\"\n\nnode local: Function {{}}\n",
             target.path().join(".nostdb/root.nostdb").display()
         ),
     )
@@ -1121,7 +1121,7 @@ fn a_refused_document_leaves_the_database_exactly_as_it_was() {
 
     fs::write(
         dir.join(".nostdb/root.nost"),
-        "@nost 2\nnode a: L {\n  id: \"n_1\",\n}\n",
+        "@nost 3\nnode a: L {\n  id: \"n_1\",\n}\n",
     )
     .unwrap();
 
@@ -1890,7 +1890,7 @@ fn change_set(generation: u64, operations: &str) -> String {
         r#"{{
   "change_set_version": 1,
   "base_generation": {generation},
-  "owner": {{"kind": "user"}},
+  "owner": "user",
   "source_snapshot": "by hand",
   "operations": [{operations}]
 }}"#
