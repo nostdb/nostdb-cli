@@ -24,7 +24,7 @@ name = "nostdb"
 #
 # Recorded here because a version is what an implementation reports it can do, and somebody reading
 # `~0.1.1` in a lock file deserves to find out from this file rather than from a refused record.
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.85"
 license = "SSPL-1.0"
