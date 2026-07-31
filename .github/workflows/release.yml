@@ -79,10 +79,38 @@ jobs:
         with:
           persist-credentials: false
 
+      # The root superproject, read for the revision it pins for each child this release builds.
+      #
+      # **A release ships what the root says the product is, so the root must be re-pinned before one is
+      # cut.** Until this step existed the order did not matter, because each child was taken from
+      # whatever its branch held. Now a root that is behind ships something behind — which is the point:
+      # the root is the only place that records which revisions were verified together.
+      #
+      # A gitlink lives in the root's tree, so `rev-parse HEAD:<path>` reads it without fetching the child.
+      - name: Check out the superproject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nostdb/nostdb
+          path: .root
+          persist-credentials: false
+
+      - name: Resolve the revisions the superproject pins
+        shell: bash
+        run: |
+          set -eu
+          for child in nostdb-distribution nostdb-provider-github; do
+            # `rev-parse` fails loudly on a path the root does not pin, which is what should happen: a
+            # release cannot choose a revision the product's own record does not name.
+            rev=$(git -C .root rev-parse "HEAD:$child")
+            echo "${child}=${rev}"
+            printf '%s=%s\n' "$(printf '%s' "$child" | tr - _)_rev" "$rev" >> "$GITHUB_ENV"
+          done
+
       - name: Check out the release assembler
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nostdb/nostdb-distribution
+          ref: ${{ env.nostdb_distribution_rev }}
           path: .distribution
           persist-credentials: false
 
@@ -135,10 +163,14 @@ jobs:
       # Checked out at the revision the superproject pins rather than at its default branch. The root
       # is what records which revision of each child this product is, and a release that took whatever
       # the branch happened to be would ship a provider nothing had verified alongside this engine.
+      #
+      # That was the intent from the first version of this step, and for two releases it was only the
+      # comment: there was no `ref`, so it took the branch. The revision is resolved above.
       - name: Check out the pinned provider
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nostdb/nostdb-provider-github
+          ref: ${{ env.nostdb_provider_github_rev }}
           path: .provider
           persist-credentials: false
 
