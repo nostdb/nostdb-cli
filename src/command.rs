@@ -39,7 +39,8 @@ Commands:
   help [COMMAND]           Describe the command surface, or one command
   init [PATH]              Configure a project, creating .nostdb/ and its database
   check TARGET             Validate a .nost or .nostdb file
-  convert INPUT OUTPUT     Convert between .nost and .nostdb, in either direction
+  convert INPUT OUTPUT [--replace]
+                           Convert between .nost and .nostdb, in either direction
   export --nost [PATH]     Write the active project's graph as canonical .nost
   query [CYPHER] [--database @NAME]
                            Run one statement, or open the REPL when none is given
@@ -96,7 +97,7 @@ Warnings are reported either way.
         }
         "convert" => {
             "\
-nostdb convert INPUT OUTPUT
+nostdb convert INPUT OUTPUT [--replace]
 
 Converts in whichever direction the extensions name:
 
@@ -105,6 +106,12 @@ Converts in whichever direction the extensions name:
 
 Refuses when both extensions are the same, because that is a copy rather than a
 conversion, and when either is neither .nost nor .nostdb.
+
+Refuses when the output already exists, and `--replace` is what permits
+overwriting it. Writing a second representation is the command most likely to be
+pointed at a path that already holds one, and destroying it without naming it is
+not something a caller should have to know to prevent. The flag may appear
+before, after, or between the paths.
 
 The output is written atomically. An endpoint naming a linked source is refused:
 resolving one needs link resolution, which this build does not implement.
@@ -723,7 +730,31 @@ fn conversion_class(error: &ConversionError) -> ExitClass {
 }
 
 /// `nostdb convert INPUT OUTPUT`
-pub fn convert(input: &Path, output: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitClass {
+pub fn convert(
+    input: &Path,
+    output: &Path,
+    replace: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitClass {
+    // The extensions are checked first, so `convert a.nost b.nost` still reports the copy it is rather than
+    // complaining that `b.nost` exists. One is a mistake in the command and the other is a fact about the
+    // filesystem, and naming the command's mistake first is more useful.
+    let named = matches!(
+        (extension(input), extension(output)),
+        (Some(NOST), Some(NOSTDB)) | (Some(NOSTDB), Some(NOST))
+    );
+    if named && !replace && output.exists() {
+        let _ = writeln!(
+            err,
+            "{} already exists: pass --replace to overwrite it",
+            output.display()
+        );
+        // Well formed, and the filesystem is what refuses. The same class `sync` uses when both
+        // representations changed, for the same reason: two things want this path and nothing here can know
+        // which one was meant.
+        return ExitClass::Conflict;
+    }
     match (extension(input), extension(output)) {
         (Some(NOST), Some(NOSTDB)) => convert_to_database(input, output, out, err),
         (Some(NOSTDB), Some(NOST)) => convert_to_nost(input, output, out, err),

@@ -94,6 +94,8 @@ pub enum Invocation {
         input: PathBuf,
         /// The file to write.
         output: PathBuf,
+        /// Whether an existing output may be overwritten.
+        replace: bool,
     },
     /// `nostdb export --nost [PATH]`
     Export {
@@ -254,18 +256,30 @@ impl Invocation {
                 }),
                 [_, extra, ..] => Err(usage(format!("`check` takes one target, found `{extra}`"))),
             },
-            "convert" => match remainder.as_slice() {
-                [] | [_] => Err(usage(
-                    "`convert` needs two paths: `nostdb convert INPUT OUTPUT`",
-                )),
-                [input, output] => Ok(Self::Convert {
-                    input: positional(input, "an input path")?,
-                    output: positional(output, "an output path")?,
-                }),
-                [_, _, extra, ..] => {
-                    Err(usage(format!("`convert` takes two paths, found `{extra}`")))
+            "convert" => {
+                // `--replace` is taken out wherever it appears, so it may precede, follow, or sit between
+                // the paths. A flag whose meaning depends on its position is one somebody gets wrong once
+                // and then stops trusting.
+                let replace = remainder.contains(&"--replace");
+                let paths: Vec<&str> = remainder
+                    .iter()
+                    .copied()
+                    .filter(|word| *word != "--replace")
+                    .collect();
+                match paths.as_slice() {
+                    [] | [_] => Err(usage(
+                        "`convert` needs two paths: `nostdb convert INPUT OUTPUT [--replace]`",
+                    )),
+                    [input, output] => Ok(Self::Convert {
+                        input: positional(input, "an input path")?,
+                        output: positional(output, "an output path")?,
+                        replace,
+                    }),
+                    [_, _, extra, ..] => {
+                        Err(usage(format!("`convert` takes two paths, found `{extra}`")))
+                    }
                 }
-            },
+            }
             "export" => {
                 // `--nost` is required rather than assumed. It is the only representation
                 // this build exports, and requiring it now keeps adding another from
@@ -379,7 +393,11 @@ impl Invocation {
             Self::Version { json } => command::version(json, out),
             Self::Init { path } => command::init(&path, out, err),
             Self::Check { target } => command::check(&target, out, err),
-            Self::Convert { input, output } => command::convert(&input, &output, out, err),
+            Self::Convert {
+                input,
+                output,
+                replace,
+            } => command::convert(&input, &output, replace, out, err),
             Self::Export { from } => command::export(&from, out, err),
             Self::Link {
                 action,

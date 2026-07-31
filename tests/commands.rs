@@ -292,10 +292,14 @@ fn a_refused_conversion_leaves_the_target_exactly_as_it_was() {
     );
     let before = fs::read(&target).unwrap();
 
+    // `--replace` deliberately, so this proves the stronger thing: even when overwriting is permitted, a
+    // document that fails validation does not touch the target. Without the flag the refusal would be the
+    // existence check, which proves nothing about validation.
     let refused = nostdb([
         "convert",
         broken.to_str().unwrap(),
         target.to_str().unwrap(),
+        "--replace",
     ]);
     assert_eq!(refused.class, ExitClass::Validation);
     assert!(refused.err.contains("NOST_INVALID_ID"), "{}", refused.err);
@@ -360,6 +364,120 @@ fn convert_refuses_a_direction_that_is_not_one() {
 }
 
 #[test]
+fn convert_refuses_an_existing_output_unless_replace_is_passed() {
+    // The command most likely to be pointed at a path that already holds a representation is the one that
+    // writes a second one. It used to overwrite silently, so a caller learned what it destroyed by noticing
+    // afterwards.
+    let dir = TempDir::new("convert-replace");
+    let source = dir.join("a.nost");
+    fs::write(&source, SAMPLE).unwrap();
+    let target = dir.join("b.nostdb");
+
+    let first = nostdb([
+        "convert",
+        source.to_str().unwrap(),
+        target.to_str().unwrap(),
+    ]);
+    assert_eq!(first.class, ExitClass::Success, "{}", first.err);
+
+    // Well formed, and the filesystem is what refuses, so this is a conflict rather than a usage error —
+    // the class `sync` uses when both representations changed, for the same reason.
+    let again = nostdb([
+        "convert",
+        source.to_str().unwrap(),
+        target.to_str().unwrap(),
+    ]);
+    assert_eq!(again.class, ExitClass::Conflict, "{}", again.err);
+    assert!(again.err.contains("--replace"), "{}", again.err);
+    assert!(
+        again.err.contains(target.to_str().unwrap()),
+        "the refusal names the path it refused: {}",
+        again.err
+    );
+
+    let replaced = nostdb([
+        "convert",
+        source.to_str().unwrap(),
+        target.to_str().unwrap(),
+        "--replace",
+    ]);
+    assert_eq!(replaced.class, ExitClass::Success, "{}", replaced.err);
+}
+
+#[test]
+fn replace_is_accepted_wherever_it_appears_and_in_either_direction() {
+    // A flag whose meaning depends on its position is one somebody gets wrong once and then stops trusting.
+    let dir = TempDir::new("convert-replace-position");
+    let source = dir.join("a.nost");
+    fs::write(&source, SAMPLE).unwrap();
+    let database = dir.join("b.nostdb");
+    let document = dir.join("c.nost");
+
+    // Written out rather than looped, because the helper takes a fixed-size array and the point is the three
+    // positions rather than the iteration.
+    let made = nostdb([
+        "convert",
+        source.to_str().unwrap(),
+        database.to_str().unwrap(),
+    ]);
+    assert_eq!(made.class, ExitClass::Success, "{}", made.err);
+    let leading = nostdb([
+        "convert",
+        "--replace",
+        source.to_str().unwrap(),
+        database.to_str().unwrap(),
+    ]);
+    assert_eq!(leading.class, ExitClass::Success, "{}", leading.err);
+    let between = nostdb([
+        "convert",
+        source.to_str().unwrap(),
+        "--replace",
+        database.to_str().unwrap(),
+    ]);
+    assert_eq!(between.class, ExitClass::Success, "{}", between.err);
+
+    // And the other direction, which has the same rule and a separate code path.
+    let out = nostdb([
+        "convert",
+        database.to_str().unwrap(),
+        document.to_str().unwrap(),
+    ]);
+    assert_eq!(out.class, ExitClass::Success, "{}", out.err);
+    let again = nostdb([
+        "convert",
+        database.to_str().unwrap(),
+        document.to_str().unwrap(),
+    ]);
+    assert_eq!(again.class, ExitClass::Conflict, "{}", again.err);
+    let replaced = nostdb([
+        "convert",
+        database.to_str().unwrap(),
+        document.to_str().unwrap(),
+        "--replace",
+    ]);
+    assert_eq!(replaced.class, ExitClass::Success, "{}", replaced.err);
+}
+
+#[test]
+fn a_direction_that_is_not_one_is_reported_before_the_output_exists() {
+    // Two mistakes can be true at once, and the command's own is the useful one to name. Reporting that
+    // `b.nost` exists would send somebody to delete a file when what is wrong is that they asked for a copy.
+    let dir = TempDir::new("convert-order");
+    let source = dir.join("a.nost");
+    fs::write(&source, SAMPLE).unwrap();
+    let target = dir.join("b.nost");
+    fs::write(&target, SAMPLE).unwrap();
+
+    let run = nostdb([
+        "convert",
+        source.to_str().unwrap(),
+        target.to_str().unwrap(),
+    ]);
+    assert_eq!(run.class, ExitClass::Usage, "{}", run.err);
+    assert!(run.err.contains("copy"), "{}", run.err);
+}
+
+#[test]
 fn export_writes_the_project_graph_and_warns_when_materialization_is_off() {
     let dir = TempDir::new("export");
     let root = dir.path().to_string_lossy().into_owned();
@@ -372,7 +490,8 @@ fn export_writes_the_project_graph_and_warns_when_materialization_is_off() {
         nostdb([
             "convert",
             source.to_str().unwrap(),
-            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+            dir.join(".nostdb/root.nostdb").to_str().unwrap(),
+            "--replace"
         ])
         .class,
         ExitClass::Success
@@ -465,7 +584,8 @@ fn seeded_project(label: &str) -> TempDir {
         nostdb([
             "convert",
             source.to_str().unwrap(),
-            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+            dir.join(".nostdb/root.nostdb").to_str().unwrap(),
+            "--replace"
         ])
         .class,
         ExitClass::Success
@@ -640,10 +760,12 @@ fn project_with_links(label: &str, links: &str) -> TempDir {
     assert_eq!(nostdb(["init", &root]).class, ExitClass::Success);
     let source = dir.join("seed.nost");
     fs::write(&source, format!("@nost 3\n\n{links}\nnode a: L {{}}\n")).unwrap();
+    // `--replace`, because `init` already wrote this database and seeding it is a deliberate overwrite.
     let converted = nostdb([
         "convert",
         source.to_str().unwrap(),
         dir.join(".nostdb/root.nostdb").to_str().unwrap(),
+        "--replace",
     ]);
     assert_eq!(converted.class, ExitClass::Success, "{}", converted.err);
     dir
@@ -689,7 +811,8 @@ fn link_list_reports_a_reachable_link_as_opened() {
         nostdb([
             "convert",
             source.to_str().unwrap(),
-            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+            dir.join(".nostdb/root.nostdb").to_str().unwrap(),
+            "--replace"
         ])
         .class,
         ExitClass::Success
@@ -840,7 +963,8 @@ fn a_query_sees_records_from_a_linked_source() {
         nostdb([
             "convert",
             source.to_str().unwrap(),
-            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+            dir.join(".nostdb/root.nostdb").to_str().unwrap(),
+            "--replace"
         ])
         .class,
         ExitClass::Success
@@ -921,7 +1045,8 @@ fn a_write_naming_a_linked_record_is_refused_and_the_target_is_untouched() {
         nostdb([
             "convert",
             source.to_str().unwrap(),
-            dir.join(".nostdb/root.nostdb").to_str().unwrap()
+            dir.join(".nostdb/root.nostdb").to_str().unwrap(),
+            "--replace"
         ])
         .class,
         ExitClass::Success
