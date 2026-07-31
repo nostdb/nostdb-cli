@@ -24,7 +24,7 @@ name = "nostdb"
 #
 # Recorded here because a version is what an implementation reports it can do, and somebody reading
 # `~0.1.1` in a lock file deserves to find out from this file rather than from a refused record.
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.85"
 license = "SSPL-1.0"
@@ -79,8 +79,8 @@ missing_panics_doc = "deny"
 #                License: SSPL-1.0.
 [dependencies]
 serde_json = "1"
-nostdb-server = { git = "https://github.com/nostdb/nostdb-server.git", rev = "de4a5970305cb025ae6152ba9e9c66258a7f9865" }
-nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "5ec3ca2a3b918b31cbbf4125ff9606170750b7d7" }
+nostdb-server = { git = "https://github.com/nostdb/nostdb-server.git", rev = "5d2a867b13e86f503b941bf80195c510e0e46dab" }
+nostdb-core = { git = "https://github.com/nostdb/nostdb-core.git", rev = "6dc84b24a728d99e58bba6e0fb99db2e462d55fc" }
 
 [dev-dependencies]
 serde_json = "1"
