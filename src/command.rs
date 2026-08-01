@@ -15,9 +15,11 @@ use crate::{PRODUCT, VERSION};
 use nostdb_core::container::SUPPORTED_FORMAT_VERSIONS;
 use nostdb_core::diagnostic::{Diagnostic, Severity};
 use nostdb_core::encoding::{Graph, commit_graph, read_graph};
+use nostdb_core::name::Label;
 use nostdb_core::nost::validate::SUPPORTED_LANGUAGE_VERSIONS;
 use nostdb_core::nost::{ConversionError, format, from_graph, parse, to_graph, validate};
 use nostdb_core::project::Project;
+use nostdb_core::schema::{EffectiveSchema, SchemaViolation};
 use nostdb_core::settings::SUPPORTED_VERSIONS as SUPPORTED_SETTINGS_VERSIONS;
 use nostdb_core::storage::Database;
 use std::io::Write;
@@ -608,6 +610,50 @@ fn report(found: &[Diagnostic], err: &mut dyn Write) -> ExitClass {
     }
 }
 
+/// Every way a record in this graph fails the Schemas the graph declares.
+///
+/// A record is described by its identifier and labels rather than a source range, because a container has no
+/// source to point into. That is the honest difference between checking a document and checking a database:
+/// the fact is the same, and only one of them can say which line.
+fn schema_violations(graph: &Graph) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut describe =
+        |kind: &str, id: String, labels: Vec<String>, breaks: Vec<SchemaViolation>| {
+            for violation in breaks {
+                found.push(format!("{kind} {id} ({}): {violation}", labels.join(", ")));
+            }
+        };
+    for node in &graph.nodes {
+        let effective = EffectiveSchema::combine(&graph.schemas, node.labels.iter());
+        describe(
+            "node",
+            node.id.to_string(),
+            node.labels
+                .iter()
+                .map(|held| held.as_str().to_owned())
+                .collect(),
+            effective.violations(&node.properties),
+        );
+    }
+    for edge in &graph.edges {
+        let relation = edge.relation.clone();
+        // A relation name and a label are validated by the same rule, so this holds in practice. When it
+        // does not, the name can match no declared Schema and there is nothing to check against.
+        let Ok(named) = Label::new(relation.as_str()) else {
+            continue;
+        };
+        let named = [named];
+        let effective = EffectiveSchema::combine(&graph.schemas, named.iter());
+        describe(
+            "edge",
+            edge.id.to_string(),
+            vec![relation.as_str().to_owned()],
+            effective.violations(&edge.properties),
+        );
+    }
+    found
+}
+
 fn extension(path: &Path) -> Option<&str> {
     path.extension().and_then(std::ffi::OsStr::to_str)
 }
@@ -663,6 +709,19 @@ pub fn check(target: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCla
             };
             match read_graph(&database) {
                 Ok(graph) => {
+                    // The records are checked against the Schemas the container itself holds, not only
+                    // decoded. Decoding alone answered "does this file open", which is a different question
+                    // from "does it say what it declares" — and the difference was visible: a document with
+                    // two schema violations reported them as `.nost`, converted, and then reported `valid`
+                    // as `.nostdb`. Anything validating only the database would have caught neither.
+                    //
+                    // `EffectiveSchema` is the Engine's own conformance rule, already written and already
+                    // tested. Reading it here rather than restating it is what keeps one answer to "does
+                    // this record satisfy its Schema" — the `.nost` reader and this one must not drift.
+                    let violations = schema_violations(&graph);
+                    for line in &violations {
+                        let _ = writeln!(err, "warning: NOST_SCHEMA_VIOLATION: {line}");
+                    }
                     let _ = writeln!(
                         out,
                         "{}: valid, generation {}, {} nodes, {} edges, {} links, {} schemas",
@@ -673,6 +732,9 @@ pub fn check(target: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCla
                         graph.links.len(),
                         graph.schemas.len()
                     );
+                    // A warning, exactly as it is for a `.nost`. Schema validation is soft by contract; an
+                    // explicit Constraint is what rejects. Exiting non-zero here would make this command
+                    // stricter than the language it reads.
                     ExitClass::Success
                 }
                 Err(error) => {

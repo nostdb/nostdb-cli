@@ -166,6 +166,54 @@ fn check_accepts_a_valid_nost_file_and_the_database_it_becomes() {
 }
 
 #[test]
+fn check_reports_a_schema_violation_in_a_database_as_well_as_in_a_document() {
+    // The same graph, read two ways, must say the same thing about itself. It did not: a document with two
+    // schema violations reported them, converted, and then reported `valid, generation 2, 1 nodes` — because
+    // checking a `.nostdb` decoded the container and validated nothing.
+    //
+    // That gap is the whole difference between "does this file open" and "does it say what it declares", and
+    // anything validating only the database would have caught neither violation.
+    let dir = TempDir::new("check-database-schema");
+    let nost = dir.join("bad.nost");
+    let database = dir.join("bad.nostdb");
+    fs::write(
+        &nost,
+        "@nost 3\n\nschema Thing {\n  name: string,\n  count: integer\n}\n\nnode a: Thing {\n  name: 42\n}\n",
+    )
+    .unwrap();
+
+    let document = nostdb(["check", nost.to_str().unwrap()]);
+    assert_eq!(document.class, ExitClass::Success, "{}", document.err);
+    assert_eq!(
+        document.err.matches("NOST_SCHEMA_VIOLATION").count(),
+        2,
+        "{}",
+        document.err
+    );
+
+    let converted = nostdb([
+        "convert",
+        nost.to_str().unwrap(),
+        database.to_str().unwrap(),
+    ]);
+    assert_eq!(converted.class, ExitClass::Success, "{}", converted.err);
+
+    let container = nostdb(["check", database.to_str().unwrap()]);
+    assert_eq!(
+        container.err.matches("NOST_SCHEMA_VIOLATION").count(),
+        2,
+        "the database reports what the document reported: {}",
+        container.err
+    );
+    // Named by identifier and labels rather than a line, because a container has no source to point into.
+    assert!(container.err.contains("(Thing)"), "{}", container.err);
+    // A warning either way. Schema validation is soft by contract, and exiting non-zero here would make this
+    // command stricter than the language it reads.
+    assert_eq!(container.class, ExitClass::Success, "{}", container.err);
+    assert!(container.out.contains("valid"), "{}", container.out);
+}
+
+#[test]
 fn check_reports_a_syntax_error_as_a_validation_failure() {
     let dir = TempDir::new("check-syntax");
     let nost = dir.join("broken.nost");
