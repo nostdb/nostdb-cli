@@ -1131,10 +1131,32 @@ mod tests {
         ] {
             assert!(text.contains(key), "the report omits {key}:\n{text}");
         }
-        // The language is at version 2 and the container at 1, which is exactly why they
-        // are reported separately rather than as one product number.
-        assert!(text.contains("\"nost_language_versions\": [3]"), "{text}");
-        assert!(text.contains("\"nostdb_format_versions\": [2]"), "{text}");
+        // The two are at different versions, and the container reports two supported where
+        // the language reports one — which is exactly why they are reported separately
+        // rather than as one product number.
+        //
+        // Derived from the constants rather than spelled out. The literals here read `[3]`
+        // and `[2]` through two bumps of each, and a stale expectation in a version test is
+        // the one place it costs the most.
+        assert!(
+            text.contains(&format!(
+                "\"nost_language_versions\": [{}]",
+                list(&SUPPORTED_LANGUAGE_VERSIONS)
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "\"nostdb_format_versions\": [{}]",
+                list(&SUPPORTED_FORMAT_VERSIONS)
+            )),
+            "{text}"
+        );
+        assert_ne!(
+            list(&SUPPORTED_LANGUAGE_VERSIONS),
+            list(&SUPPORTED_FORMAT_VERSIONS),
+            "if the two ever agree, this test has stopped proving they are independent"
+        );
     }
 
     #[test]

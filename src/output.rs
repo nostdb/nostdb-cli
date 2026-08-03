@@ -227,7 +227,10 @@ mod tests {
             Format::Json,
         );
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("one JSON document");
-        assert_eq!(parsed["result_version"], 1);
+        assert_eq!(
+            parsed["result_version"],
+            nostdb_core::result::RESULT_VERSION
+        );
         assert_eq!(parsed["summary"]["rows"], 1);
     }
 

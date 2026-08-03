@@ -1350,7 +1350,11 @@ pub fn hand_over(graph: &nostdb_core::encoding::Graph, label: &str) -> Result<Ha
         .collect();
 
     let document = serde_json::json!({
-        "graph_exchange_version": 1,
+        // Version 2: a property value may be an object, and a list holds values rather than
+        // scalars, so a list of objects and a list of lists both appear here. A version 1
+        // reader expecting a scalar in either position would misread one, which is what the
+        // field is for.
+        "graph_exchange_version": 2,
         "nodes": nodes,
         "edges": edges,
     });
@@ -1391,7 +1395,7 @@ fn properties(
 }
 
 fn property(value: &nostdb_core::property::PropertyValue) -> serde_json::Value {
-    use nostdb_core::property::{PropertyScalar, PropertyValue};
+    use nostdb_core::property::PropertyValue;
     match value {
         PropertyValue::Boolean(flag) => serde_json::Value::from(*flag),
         PropertyValue::Integer(number) => serde_json::Value::from(*number),
@@ -1401,16 +1405,19 @@ fn property(value: &nostdb_core::property::PropertyValue) -> serde_json::Value {
         // hand a plugin something that looked like text and was not.
         PropertyValue::Bytes(bytes) => serde_json::json!({"bytes": bytes.len()}),
         PropertyValue::DateTime(when) => serde_json::Value::from(when.to_string()),
-        PropertyValue::List(many) => serde_json::Value::Array(
-            many.iter()
-                .map(|scalar| match scalar {
-                    PropertyScalar::Boolean(flag) => serde_json::Value::from(*flag),
-                    PropertyScalar::Integer(number) => serde_json::Value::from(*number),
-                    PropertyScalar::Float(number) => serde_json::Value::from(number.get()),
-                    PropertyScalar::String(text) => serde_json::Value::from(text.as_str()),
-                    PropertyScalar::Bytes(bytes) => serde_json::json!({"bytes": bytes.len()}),
-                    PropertyScalar::DateTime(when) => serde_json::Value::from(when.to_string()),
-                })
+        // Both containers recurse, because a list element is a value and a value may be an object.
+        // The list arm used to duplicate every scalar case, which is what a list of scalars needed
+        // and a list of objects cannot use.
+        PropertyValue::List(many) => serde_json::Value::Array(many.iter().map(property).collect()),
+        // Emitted as a plain JSON object rather than tagged. The only tag a value position in this
+        // document carries is `{"bytes": n}`, and `bytes` is a reserved word in `.nost`, so no
+        // property key can ever be one — a bare object here is unambiguous. The result envelope
+        // tags its object form because `relationship`, `path`, and `object` are *not* reserved and
+        // a stored key may use them.
+        PropertyValue::Map(entries) => serde_json::Value::Object(
+            entries
+                .iter()
+                .map(|(key, held)| (key.to_string(), property(held)))
                 .collect(),
         ),
     }
