@@ -299,6 +299,47 @@ mod tests {
         assert_eq!(text.lines().nth(1), Some(",1"));
     }
 
+    /// An object property value survives the three formats that do not nest.
+    ///
+    /// `RESULT.md` section 4.2 already covered this without naming it: a CSV value is
+    /// rendered as its JSON form would be, and the same rule carries the table. Nothing
+    /// exercised it once a value could actually be an object, so the behavior was stated
+    /// and unproven — and the quoting is the part that would break silently, because the
+    /// JSON form is full of the two characters RFC 4180 cares about.
+    #[test]
+    fn csv_and_the_table_carry_an_object_as_its_json_form() {
+        let object = QueryValue::Object(vec![
+            (
+                nostdb_core::PropertyKey::new("name").unwrap(),
+                QueryValue::Text("serde".to_owned()),
+            ),
+            (
+                nostdb_core::PropertyKey::new("version").unwrap(),
+                QueryValue::Text("1".to_owned()),
+            ),
+        ]);
+        let held = envelope(&["dependency"], vec![vec![object]]);
+        let inner = r#"{"object":{"name":"serde","version":"1"}}"#;
+
+        // Quoted once, with every inner quote doubled, which is the whole of RFC 4180 here.
+        let csv = rendered(&held, Format::Csv);
+        assert_eq!(
+            csv.lines().nth(1),
+            Some(format!("\"{}\"", inner.replace('"', "\"\"")).as_str()),
+            "{csv}"
+        );
+
+        // The table is for a person and promises no stability, but it must still show the
+        // value rather than dropping it.
+        let table = rendered(&held, Format::Table);
+        assert!(table.contains(inner), "{table}");
+
+        // And the tag is what keeps it readable: a consumer splitting the cell back out
+        // gets an object it can tell from a byte string or a node reference.
+        let parsed: serde_json::Value = serde_json::from_str(inner).expect("the cell is JSON");
+        assert!(parsed.get("object").is_some(), "the object stays tagged");
+    }
+
     #[test]
     fn only_json_and_jsonl_carry_the_warnings() {
         assert!(Format::Json.carries_warnings());
